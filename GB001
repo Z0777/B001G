@@ -1,0 +1,1243 @@
+1. Por qué no aparece nada (no es código, son datos)
+
+En tu pantalla de Salidas el único chip de bodega es "Todas las bodegas". Eso significa que colMisBod solo tiene la fila fija TODAS, es decir, INV_Bodegas no está devolviendo ninguna bodega activa. Sin bodegas, varBodega, varBodCat y varBodIng quedan vacías y por eso Salidas, Catálogo, Ingresos y Conteo salen en blanco al mismo tiempo.
+
+La causa casi segura es una trampa de SharePoint: cuando le agregas una columna Sí/No a una lista que ya tiene filas, las filas existentes quedan vacías, no en "Sí". Y vacío no es igual a true, así que Filter(INV_Bodegas; ACTIVA = true) no devuelve nada.
+
+Cómo confirmarlo. Tu etiqueta Label1 existe pero es texto rojo sobre azul marino y no se lee. Cámbiale esto:
+
+Control: Label1 → Propiedad: Color
+
+=Color.White
+
+Control: Label1 → Propiedad: Text
+
+="Acceso: " & If(IsBlank(nfMiAcceso); "NO EXISTE"; nfMiArea & " / " & nfMiRol) &
+ "   |   Filas en INV_Bodegas: " & CountRows(INV_Bodegas) &
+ " (activas: " & CountRows(nfBodegasAll) & ")" &
+ "   |   Veo: " & Concat(nfMisBodegas; Title; ", ") &
+ "   |   Administro: " & Concat(nfBodegasAdmin; Title; ", ") &
+ "   |   Por defecto: " & Coalesce(nfBodegaDefault; "(vacia)") &
+ "   |   Existencias con BODEGA = BG: " & CountRows(Filter(INV_Existencias; BODEGA = "BG")) &
+ "   |   Valores de BODEGA en INV_Existencias: " & Concat(Distinct(INV_Existencias; BODEGA); Value; ", ")
+
+(Pega esto después de actualizar App.Formulas de la sección 4; si no, nfBodegasAdmin todavía no existe.)
+
+Cómo arreglarlo en SharePoint:
+
+INV_Bodegas → Editar en vista de cuadrícula → pon Sí en ACTIVA de cada fila. Luego Configuración de la lista → columna ACTIVA → Valor predeterminado: Sí.
+INV_Acceso → igual con ACTIVO.
+PRODUCTOS → Configuración → columna ACTIVO → Valor predeterminado: Sí (para las filas futuras). Las existentes no hace falta tocarlas: abajo quito ese filtro de la búsqueda de Ingresos.
+Mira la última parte de Label1, "Valores de BODEGA en INV_Existencias". Tiene que decir BG, MT-FON, .... Si dice BODEGA GENERAL o sale vacío, corre tu btnRepararBodegas.
+En el Studio: clic derecho en App → Ejecutar OnStart.
+2. Corrección mía: el orden de los popups
+
+En el txt (Parte 1.3) te escribí que en la Vista de árbol el scrim va arriba de su popup. Es al revés. En la Vista de árbol lo que está más arriba se dibuja al frente; si el rectángulo gris queda arriba, tapa al popup y cualquier toque lo cierra.
+
+Siguiendo mi instrucción invertiste tres parejas que estaban bien. Hoy el carrito de salidas no se puede usar (por eso no puedes completar una salida), tampoco el formulario de editar/baja ni el menú en teléfono.
+
+El orden correcto en la Vista de árbol (de arriba hacia abajo):
+
+btnRouter
+cntPopLista
+recScrimLista
+cntPopForm
+recScrimForm
+cntPopCarrito
+recScrimPop
+cntNav
+recScrimNav
+cntCuerpo
+
+La forma más rápida de dejarlo así: selecciona cada control en este orden y en cada uno haz clic derecho → Reordenar → Traer al frente:
+
+recScrimNav → cntNav → recScrimPop → cntPopCarrito → recScrimForm → cntPopForm → recScrimLista → cntPopLista → btnRouter
+
+Cada "traer al frente" lo manda hasta arriba, así que al terminar quedan exactamente en el orden correcto.
+
+Regla para no volver a equivocarse: en la Vista de árbol, cada popup va justo ARRIBA de su rectángulo gris.
+
+3. Quién puede hacer qué
+
+Esta es la lógica que describiste, y la que dejan las fórmulas de abajo:
+
+	Operativo	Encargada Bodega General	Encargado Mantenimiento	Gerente	Admin
+Salidas	BG + bodegas de su área	BG	BG + MT-*	BG + su área	todas
+Catálogo y Excel	BG + su área	BG	BG + MT-*	BG + su área	todas
+Editar artículo	—	BG	MT-*	—	todas
+Confirmar entrega	—	✓	—	—	✓
+Ingresos	—	solo BG	solo MT-*	—	todas
+Conteo físico	—	BG	MT-*	solo autoriza	todas
+Crear códigos	—	para cualquier bodega	para MT-*	—	todas
+Reportes	—	BG	MT-*	—	todas
+Bajas	—	—	—	—	✓
+
+Y para todos: la bodega por defecto es siempre Bodega General. En Ingresos, Conteo y Reportes la bodega por defecto es la primera que administras (BG para la encargada de BG, Fontanería para mantenimiento).
+
+El sistema distingue ahora tres listas de bodegas por usuario:
+
+las que VE (nfMisBodegas) → Salidas y Catálogo
+las que ADMINISTRA (nfBodegasAdmin) → Ingresos, Conteo, Reportes y editar artículos
+en las que puede CREAR códigos (nfBodegasCodigo) → todas para la encargada de BG; las suyas para los demás
+
+El rol COMPRAS puede hacer ingresos en las bodegas de su área, pero no contar ni crear códigos.
+
+4. App.Formulas — reemplaza el bloque completo
+
+Control: App → Propiedad: Formulas
+
+nfCol = {
+    Bg:          "#EDF1F4";
+    Surface:     "#FFFFFF";
+    Surface2:    "#F5F8FA";
+    Surface3:    "#E7EDF1";
+    Ink:         "#14202B";
+    Muted:       "#55657A";
+    Faint:       "#8595A8";
+    Line:        "#D3DCE4";
+    Line2:       "#E6ECF1";
+    Nav:         "#1E3050";
+    Nav2:        "#2E4873";
+    NavInk:      "#E2EAF5";
+    NavMut:      "#92A6C2";
+    NavSel:      "#F0B429";
+    NavSelTxt:   "#0B1E38";
+    Accent:      "#157F5B";
+    Accent2:     "#1FA172";
+    AccentSoft:  "#D8EFE5";
+    AccentInk:   "#0A4A35";
+    Blue:        "#1F6FB2";   BlueSoft:   "#DBEAF7";
+    Amber:       "#9A6207";   AmberSoft:  "#FAEBD0";
+    Red:         "#A62B2B";   RedSoft:    "#F8DEDE";
+    Violet:      "#5A4B9C";   VioletSoft: "#E6E2F5";
+    Slate:       "#495A6B";   SlateSoft:  "#E2E8EE"
+};;
+
+nfCorteMovil = 760;;
+nfAnchoNav   = 212;;
+nfAltoBarra  = 54;;
+nfRadio      = 10;;
+nfPad        = 16;;
+nfEsMovil    = App.Width < nfCorteMovil;;
+
+nfUser = {
+    Nombre: User().FullName;
+    Correo: Lower(User().Email)
+};;
+
+nfPersonaUser = {
+    '@odata.type': "#Microsoft.Azure.Connectors.SharePoint.SPListExpandedUser";
+    Claims:      "i:0#.f|membership|" & Lower(User().Email);
+    DisplayName: User().FullName;
+    Email:       Lower(User().Email);
+    Department:  "";
+    JobTitle:    "";
+    Picture:     ""
+};;
+
+/* ---------- PERMISOS ---------- */
+nfMiAcceso = LookUp(INV_Acceso; Title = nfUser.Correo);;
+nfMiArea   = Coalesce(nfMiAcceso.AREA; "SIN AREA");;
+nfMiRol    = Coalesce(nfMiAcceso.ROL.Value; "OPERATIVO");;
+
+nfEsAdmin     = nfMiRol = "ADMIN";;
+nfEsEncargado = nfMiRol = "ENCARGADO BODEGA";;
+nfEsGerente   = Or(nfEsAdmin; nfMiRol = "GERENTE");;
+nfRutaBG      = Coalesce(nfMiAcceso.RUTA_BG; false);;
+
+/* encargada de Bodega General: confirma entregas y crea codigos para cualquier bodega */
+nfEsBodegaGral = Or(nfEsAdmin; And(nfEsEncargado; nfMiArea = "BODEGA GENERAL"));;
+
+/* ---------- BODEGAS ---------- */
+nfBodegasAll = Sort(Filter(INV_Bodegas; ACTIVA = true); ORDEN; SortOrder.Ascending);;
+
+/* 1. las que VEO (salidas y catalogo): Bodega General siempre + las de mi area */
+nfMisBodegas = Filter(
+    nfBodegasAll;
+    Or(nfEsAdmin; ES_GENERAL = true; AREA = nfMiArea)
+);;
+
+/* 2. las que ADMINISTRO (ingresos, conteo, reportes, editar) */
+nfBodegasAdmin = Filter(
+    nfBodegasAll;
+    Or(
+        nfEsAdmin;
+        And(Or(nfEsEncargado; nfMiRol = "COMPRAS"); AREA = nfMiArea);
+        Lower(Coalesce(CORREO_ENCARGADO; "")) = nfUser.Correo
+    )
+);;
+
+/* 3. donde puedo CREAR codigos */
+nfBodegasCodigo = If(nfEsBodegaGral; nfBodegasAll; nfBodegasAdmin);;
+
+nfBodegaGral     = LookUp(nfBodegasAll; ES_GENERAL = true);;
+nfBodegaDefault  = Coalesce(nfBodegaGral.Title; First(nfMisBodegas).Title);;
+nfBodegaAdminDef = Coalesce(
+    LookUp(nfBodegasAdmin; ES_GENERAL = true).Title;
+    First(nfBodegasAdmin).Title
+);;
+
+/* se conserva el nombre porque lo usan cmbRepBodega y el menu */
+nfBodegasEnc = nfBodegasAdmin;;
+
+nfPuedeIngresar = CountRows(nfBodegasAdmin) > 0;;
+nfPuedeContar   = Or(nfEsAdmin; nfEsEncargado) && CountRows(nfBodegasAdmin) > 0;;
+nfPuedeCrearCod = Or(nfEsAdmin; nfEsEncargado) && CountRows(nfBodegasCodigo) > 0;;
+nfPuedeReporte  = Or(nfEsAdmin; nfEsEncargado) && CountRows(nfBodegasAdmin) > 0;;
+
+/* ---------- CATALOGOS ---------- */
+nfProductos   = Filter(PRODUCTOS; ACTIVO = true);;
+nfExistencias = Filter(INV_Existencias; ACTIVO = true);;
+
+nfCategorias = Sort(
+    Distinct(Filter(INV_Existencias; ACTIVO = true); CATEGORIA);
+    Value;
+    SortOrder.Ascending
+);;
+
+nfAreasUso = [
+    "CROP";
+    "MANTENIMIENTO";
+    "COCINA";
+    "TOMATE";
+    "CHILES";
+    "CUCURBITACEAS";
+    "SPA";
+    "CONSERJERIA";
+    "SITE OPERATION";
+    "ADMINISTRACION"
+];;
+
+nfPersonal = Sort(
+    Filter(CATALOGO_PERSONAL1; Activo = "SI");
+    Nombre;
+    SortOrder.Ascending
+);;
+
+nfProveedores = Sort(Filter(TRZ_Proveedores; Activo = true); Title; SortOrder.Ascending);;
+
+nfProyectos = Sort(
+    Filter(INV_Proyectos; ESTADO.Value = "ABIERTO");
+    Title;
+    SortOrder.Descending
+);;
+
+nfMisProyectos = Filter(nfProyectos; Or(nfEsAdmin; AREA = nfMiArea));;
+
+nfCatEPP = "EQUIPO DE SEGURIDAD INDUSTRIAL";;
+
+nfMeses = Table(
+    {N: 1;  Etq: "Enero"};      {N: 2;  Etq: "Febrero"};   {N: 3;  Etq: "Marzo"};
+    {N: 4;  Etq: "Abril"};      {N: 5;  Etq: "Mayo"};      {N: 6;  Etq: "Junio"};
+    {N: 7;  Etq: "Julio"};      {N: 8;  Etq: "Agosto"};    {N: 9;  Etq: "Septiembre"};
+    {N: 10; Etq: "Octubre"};    {N: 11; Etq: "Noviembre"}; {N: 12; Etq: "Diciembre"}
+);;
+
+/* ---------- CONTADORES ---------- */
+nfPorEntregar = Filter(SALIDAS; ESTADO.Value = "PENDIENTE"; CONFIRMA = true);;
+nfConteosMios = Filter(INV_Conteos; ESTADO.Value = "ENVIADO"; CORREO_AUTORIZA = nfUser.Correo);;
+nfBajoMinimo  = Filter(INV_Existencias; ACTIVO = true; MINIMO > 0; EXISTENCIA <= MINIMO);;
+
+nfCtaPorEntregar = CountRows(nfPorEntregar);;
+nfCtaConteos     = CountRows(nfConteosMios);;
+nfCtaBajoMin     = CountRows(nfBajoMinimo);;
+
+/* ---------- REGISTROS VACIOS ---------- */
+nfLineaVacia = {
+    Clave:        "";
+    Codigo:       "";
+    Descripcion:  "";
+    Categoria:    "";
+    Bodega:       "";
+    Unidad:       "";
+    Existencia:   0;
+    Cantidad:     1;
+    Minimo:       0;
+    CorreoCompra: "";
+    ReqPersona:   false;
+    Persona:      "";
+    Proyecto:     "";
+    ProyectoNom:  ""
+};;
+
+nfIngVacio = {
+    Clave:       "";
+    Codigo:      "";
+    Descripcion: "";
+    Categoria:   "";
+    Unidad:      "";
+    Existencia:  0;
+    Cantidad:    0;
+    CostoUnit:   0;
+    Bodega:      ""
+};;
+
+nfConteoVacio = {
+    Clave:       "";
+    Codigo:      "";
+    Descripcion: "";
+    Categoria:   "";
+    Unidad:      "";
+    Sistema:     0;
+    Fisica:      0;
+    Contado:     false
+};;
+
+nfCodVacio = {
+    Fila:        0;
+    Categoria:   "";
+    Nombre:      "";
+    Unidad:      "";
+    Bodega:      "";
+    Minimo:      0;
+    Estante:     "";
+    Comprador:   "";
+    ReqPersona:  false
+};;
+
+/* ---------- MENU ---------- */
+nfMenu = Table(
+    {Pant: "MENU"; Etiqueta: "Menu principal";    Ico: "HOME";  Cta: 0;                Ver: true};
+    {Pant: "SAL";  Etiqueta: "Salidas";           Ico: "TREND"; Cta: 0;                Ver: true};
+    {Pant: "ENT";  Etiqueta: "Confirmar entrega"; Ico: "CHECK"; Cta: nfCtaPorEntregar; Ver: nfEsBodegaGral};
+    {Pant: "ING";  Etiqueta: "Ingresos";          Ico: "DOWN";  Cta: 0;                Ver: nfPuedeIngresar};
+    {Pant: "CONT"; Etiqueta: "Conteo fisico";     Ico: "ITEMS"; Cta: nfCtaConteos;     Ver: Or(nfPuedeContar; nfEsGerente)};
+    {Pant: "COD";  Etiqueta: "Crear codigos";     Ico: "ADD";   Cta: 0;                Ver: nfPuedeCrearCod};
+    {Pant: "CAT";  Etiqueta: "Catalogo";          Ico: "LIST";  Cta: nfCtaBajoMin;     Ver: true};
+    {Pant: "REP";  Etiqueta: "Reportes";          Ico: "CHART"; Cta: 0;                Ver: nfPuedeReporte};
+    {Pant: "BAJA"; Etiqueta: "Bajas";             Ico: "TRASH"; Cta: 0;                Ver: nfEsAdmin}
+);;
+
+nfBotonesMenu = Table(
+    {
+        Pant: "SAL"; Ico: "TREND"; Titulo: "Registrar salida";
+        Detalle: "Por proyecto o por unidad. El material se descuenta de la bodega que seleccione.";
+        Cta: 0; Ver: true
+    };
+    {
+        Pant: "ENT"; Ico: "CHECK"; Titulo: "Confirmar entrega";
+        Detalle: "Lo solicitado que todavia no recogen. Aqui se devuelve a bodega lo que no se llevaron.";
+        Cta: nfCtaPorEntregar; Ver: nfEsBodegaGral
+    };
+    {
+        Pant: "ING"; Ico: "DOWN"; Titulo: "Ingreso de compra";
+        Detalle: "Varios productos de un mismo proveedor y una misma factura, con o sin proyecto.";
+        Cta: 0; Ver: nfPuedeIngresar
+    };
+    {
+        Pant: "CONT"; Ico: "ITEMS"; Titulo: "Conteo fisico";
+        Detalle: "Compare fisico contra sistema y envie la diferencia a autorizacion del gerente.";
+        Cta: nfCtaConteos; Ver: Or(nfPuedeContar; nfEsGerente)
+    };
+    {
+        Pant: "COD"; Ico: "ADD"; Titulo: "Crear codigos";
+        Detalle: "Un codigo por producto para toda la empresa.";
+        Cta: 0; Ver: nfPuedeCrearCod
+    };
+    {
+        Pant: "CAT"; Ico: "LIST"; Titulo: "Catalogo y existencias";
+        Detalle: "Que hay en cada bodega, que esta bajo minimo y descarga a Excel.";
+        Cta: nfCtaBajoMin; Ver: true
+    };
+    {
+        Pant: "REP"; Ico: "CHART"; Titulo: "Reportes";
+        Detalle: "Ingresos, salidas, existencias y costos del mes, en Excel.";
+        Cta: 0; Ver: nfPuedeReporte
+    }
+);;
+5. App.OnStart — reemplaza el bloque completo
+
+Control: App → Propiedad: OnStart
+
+Set(varPantalla;    "MENU");;
+Set(varPopup;       "");;
+Set(varGuardando;   false);;
+Set(varNavAbierto;  false);;
+Set(varDescargando; false);;
+
+/* SALIDAS */
+Set(varModoSal;    "UNIDAD");;
+Set(varBodega;     nfBodegaDefault);;
+Set(varBuscar;     "");;
+Set(varNoSalida;   "");;
+Set(varAreaUso;    "");;
+Set(varProyecto;   LookUp(INV_Proyectos; false));;
+Set(varLineaEPP;   "");;
+Set(varBuscarPop;  "");;
+
+/* CATALOGO */
+Set(varBodCat;     nfBodegaDefault);;
+Set(varBuscarCat;  "");;
+Set(varSoloMin;    false);;
+Set(varEditArt;    LookUp(INV_Existencias; false));;
+
+/* INGRESOS */
+Set(varBodIng;     nfBodegaAdminDef);;
+Set(varProveedor;  LookUp(TRZ_Proveedores; false));;
+Set(varProvNuevo;  "");;
+Set(varProvTel;    "");;
+Set(varFactura;    "");;
+Set(varProyIng;    LookUp(INV_Proyectos; false));;
+Set(varBuscarIng;  "");;
+Set(varEsProyecto; false);;
+Set(varProyNom;    "");;
+
+/* CONTEO */
+Set(varBodConteo;  nfBodegaAdminDef);;
+Set(varFolioCnt;   "");;
+Set(varFolioAut;   "");;
+Set(varBuscarCnt;  "");;
+
+/* CODIGOS */
+Set(varFilaCod;    0);;
+
+/* REPORTES */
+Set(varBodRep;  nfBodegaAdminDef);;
+Set(varMesIni;  Month(Now()));;
+Set(varMesFin;  Month(Now()));;
+Set(varAnioRep; Year(Now()));;
+
+/* COLECCIONES */
+ClearCollect(colSel;     nfLineaVacia);;   Clear(colSel);;
+ClearCollect(colIng;     nfIngVacio);;     Clear(colIng);;
+ClearCollect(colCnt;     nfConteoVacio);;  Clear(colCnt);;
+ClearCollect(colNuevos;  nfCodVacio);;     Clear(colNuevos);;
+ClearCollect(colCatSel;  {Cat: ""});;      Clear(colCatSel);;
+Clear(colErroresStock);;
+Clear(colBajoMinimo);;
+Clear(colEntrega);;
+
+/* BODEGAS */
+ClearCollect(
+    colMisBod;
+    ForAll(nfMisBodegas As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN})
+);;
+Collect(colMisBod; {B: "TODAS"; N: "Todas las bodegas"; C: "TODAS"; O: 99});;
+ClearCollect(
+    colAdminBod;
+    ForAll(nfBodegasAdmin As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN})
+);;
+ClearCollect(
+    colCodBod;
+    ForAll(nfBodegasCodigo As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN})
+);;
+
+Concurrent(
+    Refresh(PRODUCTOS);
+    Refresh(INV_Existencias);
+    Refresh(SALIDAS);
+    Refresh(INGRESOS)
+)
+6. btnRouter — reemplaza OnSelect
+
+El cambio clave: las listas de bodegas se reconstruyen cada vez que cambias de pantalla. Así, aunque alguien agregue una bodega en SharePoint con la app abierta, aparece al navegar; ya no depende de que OnStart haya corrido con los datos listos. Además, Conteo ahora carga los productos solo, sin presionar ningún botón.
+
+Antes de pegar esto, crea txtBuscarCnt (sección 9). Si no existe, el Reset(txtBuscarCnt) marcará error.
+
+Control: btnRouter → Propiedad: OnSelect
+
+=Set(varPopup; "");;
+If(scrPrincipal.Width < nfCorteMovil; Set(varNavAbierto; false));;
+
+/* ---------- BODEGAS: se recalculan en cada cambio de vista ---------- */
+ClearCollect(
+    colMisBod;
+    ForAll(nfMisBodegas As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN})
+);;
+Collect(colMisBod; {B: "TODAS"; N: "Todas las bodegas"; C: "TODAS"; O: 99});;
+ClearCollect(
+    colAdminBod;
+    ForAll(nfBodegasAdmin As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN})
+);;
+ClearCollect(
+    colCodBod;
+    ForAll(nfBodegasCodigo As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN})
+);;
+
+/* ---------- SALIDAS: siempre arranca en Bodega General ---------- */
+If(varPantalla = "SAL";
+    Set(varModoSal;  "UNIDAD");;
+    Set(varBodega;   nfBodegaDefault);;
+    Set(varBuscar;   "");;
+    Reset(txtBuscar);;
+    Set(varAreaUso;  "");;
+    Set(varProyecto; LookUp(INV_Proyectos; false));;
+    Clear(colCatSel);;
+    Clear(colSel);;
+    Clear(colErroresStock);;
+    Refresh(INV_Existencias)
+);;
+
+/* ---------- CONFIRMAR ENTREGA ---------- */
+If(varPantalla = "ENT";
+    Refresh(SALIDAS);;
+    ClearCollect(
+        colEntrega;
+        ForAll(
+            Sort(
+                Filter(SALIDAS; ESTADO.Value = "PENDIENTE"; CONFIRMA = true);
+                FECHA;
+                SortOrder.Descending
+            ) As s;
+            {
+                IdSal:       s.ID;
+                NoSalida:    s.NO_SALIDA;
+                Codigo:      s.CODIGO;
+                Descripcion: s.DESCRIPCION;
+                Categoria:   s.CATEGORIA;
+                Unidad:      s.'UNIDAD MEDIDA';
+                Bodega:      s.BODEGA;
+                AreaUso:     s.'AREA USO';
+                Responsable: s.RESPONSABLE;
+                Fecha:       s.FECHA;
+                Solicitada:  s.SALIDA;
+                Entregar:    s.SALIDA;
+                Marcado:     false;
+                Motivo:      ""
+            }
+        )
+    )
+);;
+
+/* ---------- INGRESOS: arranca en la primera bodega que administro ---------- */
+If(varPantalla = "ING";
+    Set(varBodIng;     nfBodegaAdminDef);;
+    Set(varProveedor;  LookUp(TRZ_Proveedores; false));;
+    Set(varProvNuevo;  "");;
+    Set(varProvTel;    "");;
+    Set(varFactura;    "");;
+    Reset(txtIngFactura);;
+    Set(varProyIng;    LookUp(INV_Proyectos; false));;
+    Set(varEsProyecto; false);;
+    Reset(tglEsProyecto);;
+    Set(varProyNom;    "");;
+    Set(varBuscarIng;  "");;
+    Reset(txtBuscarIng);;
+    Clear(colIng);;
+    Refresh(PRODUCTOS);;
+    Refresh(INV_Existencias)
+);;
+
+/* ---------- CONTEO FISICO: carga los productos automaticamente ---------- */
+If(varPantalla = "CONT";
+    Set(varBodConteo; nfBodegaAdminDef);;
+    Set(varFolioCnt;  "CNT-" & Text(Now(); "yyyymmddhhmmss"));;
+    Set(varFolioAut;  "");;
+    Set(varBuscarCnt; "");;
+    Reset(txtBuscarCnt);;
+    Clear(colCatSel);;
+    Refresh(INV_Existencias);;
+    ClearCollect(
+        colCnt;
+        ForAll(
+            Filter(INV_Existencias; ACTIVO = true; BODEGA = varBodConteo) As e;
+            {
+                Clave:       e.Title;
+                Codigo:      e.CODIGO;
+                Descripcion: e.DESCRIPCION;
+                Categoria:   e.CATEGORIA;
+                Unidad:      e.UNIDAD;
+                Sistema:     e.EXISTENCIA;
+                Fisica:      e.EXISTENCIA;
+                Contado:     false
+            }
+        )
+    )
+);;
+
+/* ---------- CATALOGO: siempre arranca en Bodega General ---------- */
+If(varPantalla = "CAT";
+    Set(varBodCat;    nfBodegaDefault);;
+    Set(varBuscarCat; "");;
+    Reset(txtCatBuscar);;
+    Set(varSoloMin;   false);;
+    Clear(colCatSel);;
+    Refresh(INV_Existencias)
+);;
+
+/* ---------- CREAR CODIGOS ---------- */
+If(varPantalla = "COD";
+    Clear(colNuevos);;
+    Refresh(PRODUCTOS)
+);;
+
+/* ---------- REPORTES ---------- */
+If(varPantalla = "REP";
+    Set(varBodRep;  nfBodegaAdminDef);;
+    Set(varMesIni;  Month(Now()));;
+    Set(varMesFin;  Month(Now()));;
+    Set(varAnioRep; Year(Now()))
+);;
+
+/* ---------- BAJAS ---------- */
+If(varPantalla = "BAJA";
+    ClearCollect(colBajas; Sort(Filter(INV_Bajas; REACTIVADO = false); FECHA_BAJA; SortOrder.Descending))
+)
+7. Salidas y Catálogo
+
+Las dos galerías tenían un filtro de permiso que descartaba todas las filas cuando colMisBod venía vacía. Ahora ese filtro solo aplica con "Todas las bodegas"; con una bodega concreta basta con que la bodega esté elegida.
+
+Control: galItems → Propiedad: Items
+
+=If(
+    varModoSal = "PROYECTO";
+
+    ForAll(
+        Distinct(
+            Filter(INGRESOS; PROYECTO_CODIGO = Coalesce(varProyecto.Title; "@@"));
+            CODIGO
+        ) As p;
+        With(
+            {
+                e: LookUp(
+                       INV_Existencias;
+                       CODIGO = p.Value && ACTIVO = true
+                   )
+            };
+            {
+                Clave:       Coalesce(e.Title; p.Value);
+                Codigo:      p.Value;
+                Descripcion: Coalesce(e.DESCRIPCION; "");
+                Categoria:   Coalesce(e.CATEGORIA; "");
+                Bodega:      Coalesce(e.BODEGA; "");
+                Unidad:      Coalesce(e.UNIDAD; "");
+                Existencia:  Coalesce(e.EXISTENCIA; 0);
+                Minimo:      Coalesce(e.MINIMO; 0);
+                Comprador:   Coalesce(e.CorreoComprador; "");
+                ReqPersona:  Coalesce(e.REQ_PERSONA; false)
+            }
+        )
+    );
+
+    ForAll(
+        Filter(
+            Filter(
+                INV_Existencias;
+                ACTIVO = true;
+                Or(varBodega = "TODAS"; BODEGA = varBodega);
+                Or(IsBlank(varBuscar); StartsWith(CODIGO; varBuscar); StartsWith(DESCRIPCION; varBuscar))
+            );
+            Or(IsEmpty(colCatSel); CATEGORIA in colCatSel.Cat);
+            Or(varBodega <> "TODAS"; !IsBlank(LookUp(colMisBod; B = BODEGA; B)));
+            Or(varBodega <> "TODAS"; Len(varBuscar) >= 2; !IsEmpty(colCatSel))
+        ) As e;
+        {
+            Clave:       e.Title;
+            Codigo:      e.CODIGO;
+            Descripcion: e.DESCRIPCION;
+            Categoria:   e.CATEGORIA;
+            Bodega:      e.BODEGA;
+            Unidad:      e.UNIDAD;
+            Existencia:  e.EXISTENCIA;
+            Minimo:      e.MINIMO;
+            Comprador:   e.CorreoComprador;
+            ReqPersona:  e.REQ_PERSONA
+        }
+    )
+)
+
+Control: galCatalogo → Propiedad: Items
+
+=ForAll(
+    Filter(
+        Filter(
+            INV_Existencias;
+            ACTIVO = true;
+            Or(varBodCat = "TODAS"; BODEGA = varBodCat);
+            Or(IsBlank(varBuscarCat); StartsWith(CODIGO; varBuscarCat); StartsWith(DESCRIPCION; varBuscarCat))
+        );
+        Or(IsEmpty(colCatSel); CATEGORIA in colCatSel.Cat);
+        Or(!varSoloMin; And(MINIMO > 0; EXISTENCIA <= MINIMO));
+        Or(varBodCat <> "TODAS"; !IsBlank(LookUp(colMisBod; B = BODEGA; B)))
+    ) As e;
+    {
+        Reg:         e;
+        Clave:       e.Title;
+        Codigo:      e.CODIGO;
+        Descripcion: e.DESCRIPCION;
+        Categoria:   e.CATEGORIA;
+        Bodega:      e.BODEGA;
+        Unidad:      e.UNIDAD;
+        Existencia:  e.EXISTENCIA;
+        Minimo:      e.MINIMO;
+        Estante:     e.ESTANTE;
+        Costo:       e.COSTO_ULT;
+        Valor:       e.EXISTENCIA * Coalesce(e.COSTO_ULT; 0)
+    }
+)
+
+Control: btnEditarArt → Propiedad: Visible (hoy no tiene: cualquier operativo podía cambiar descripciones)
+
+=Or(nfEsAdmin; !IsBlank(LookUp(colAdminBod; B = ThisItem.Bodega; B)))
+8. Popup de listas: nuevas bodegas permitidas por pantalla
+
+Control: recScrimLista → Propiedad: Visible
+
+=varPopup in ["BODEGA"; "BODING"; "BODCAT"; "BODCNT"; "CODBOD"; "CAT"; "PROY"; "PROYING"; "PERSONA"; "PROV"]
+
+Control: cntPopLista → Propiedad: Visible
+
+=varPopup in ["BODEGA"; "BODING"; "BODCAT"; "BODCNT"; "CODBOD"; "CAT"; "PROY"; "PROYING"; "PERSONA"; "PROV"]
+
+Control: lblPopListaTit → Propiedad: Text
+
+=Switch(
+    varPopup;
+    "BODEGA";  "Seleccione la bodega";
+    "BODING";  "Bodega que recibe el ingreso";
+    "BODCAT";  "Bodega a consultar";
+    "BODCNT";  "Bodega a contar";
+    "CODBOD";  "Bodega del codigo nuevo";
+    "CAT";     "Filtrar por categoria";
+    "PROY";    "Seleccione el proyecto";
+    "PROYING"; "Proyecto del ingreso";
+    "PERSONA"; "Quien va a usar el equipo";
+    "PROV";    "Seleccione el proveedor";
+    ""
+)
+
+Control: galPopLista → Propiedad: Items
+
+Ingresos y Conteo muestran solo las bodegas que administras; Crear códigos muestra las que te permite crear; y Categorías ahora sabe en qué pantalla estás.
+
+=Switch(
+    varPopup;
+
+    "BODEGA";
+    ForAll(
+        Sort(colMisBod; O; SortOrder.Ascending) As b;
+        {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: b.B = varBodega}
+    );
+
+    "BODCAT";
+    ForAll(
+        Sort(colMisBod; O; SortOrder.Ascending) As b;
+        {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: b.B = varBodCat}
+    );
+
+    "BODING";
+    ForAll(
+        Sort(colAdminBod; O; SortOrder.Ascending) As b;
+        {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: b.B = varBodIng}
+    );
+
+    "BODCNT";
+    ForAll(
+        Sort(colAdminBod; O; SortOrder.Ascending) As b;
+        {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: b.B = varBodConteo}
+    );
+
+    "CODBOD";
+    ForAll(
+        Sort(colCodBod; O; SortOrder.Ascending) As b;
+        {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: false}
+    );
+
+    "CAT";
+    With(
+        {bod: Switch(varPantalla; "CONT"; varBodConteo; "CAT"; varBodCat; varBodega)};
+        ForAll(
+            Sort(
+                Distinct(
+                    Filter(INV_Existencias; ACTIVO = true; Or(bod = "TODAS"; BODEGA = bod));
+                    CATEGORIA
+                );
+                Value;
+                SortOrder.Ascending
+            ) As c;
+            {Cod: c.Value; Etq: c.Value; Det: ""; Marcado: c.Value in colCatSel.Cat}
+        )
+    );
+
+    "PROY";
+    ForAll(
+        Filter(
+            nfMisProyectos;
+            Or(IsBlank(varBuscarPop); StartsWith(Title; varBuscarPop); StartsWith(NOMBRE; varBuscarPop))
+        ) As p;
+        {
+            Cod: p.Title;
+            Etq: p.Title & "  ·  " & p.NOMBRE;
+            Det: p.AREA & "   ·   " & CountRows(Filter(INGRESOS; PROYECTO_CODIGO = p.Title)) & " renglones";
+            Marcado: false
+        }
+    );
+
+    "PROYING";
+    ForAll(
+        Filter(
+            nfMisProyectos;
+            Or(IsBlank(varBuscarPop); StartsWith(Title; varBuscarPop); StartsWith(NOMBRE; varBuscarPop))
+        ) As p;
+        {
+            Cod: p.Title;
+            Etq: p.Title & "  ·  " & p.NOMBRE;
+            Det: p.AREA & "   ·   " & Text(p.FECHA_INICIO; "dd/mm/yyyy");
+            Marcado: false
+        }
+    );
+
+    "PERSONA";
+    ForAll(
+        Filter(nfPersonal; Or(IsBlank(varBuscarPop); StartsWith(Nombre; varBuscarPop))) As q;
+        {
+            Cod: q.Nombre;
+            Etq: q.Nombre;
+            Det: Coalesce(q.DEPARTAMENTO; "") & "   ·   " & Coalesce(q.CODIGO; "");
+            Marcado: false
+        }
+    );
+
+    "PROV";
+    ForAll(
+        Filter(nfProveedores; Or(IsBlank(varBuscarPop); StartsWith(Title; varBuscarPop))) As v;
+        {
+            Cod: v.Title;
+            Etq: v.Title;
+            Det: Coalesce(v.Telefono; "sin telefono");
+            Marcado: false
+        }
+    );
+
+    ForAll(
+        Filter(colMisBod; false) As z;
+        {Cod: ""; Etq: ""; Det: ""; Marcado: false}
+    )
+)
+
+Control: btnPopSel → Propiedad: OnSelect
+
+=Switch(
+    varPopup;
+
+    "BODEGA";
+    Set(varBodega; ThisItem.Cod);;
+    Clear(colCatSel);;
+    Set(varBuscar; "");;
+    Reset(txtBuscar);;
+    Set(varPopup; "");
+
+    "BODCAT";
+    Set(varBodCat; ThisItem.Cod);;
+    Clear(colCatSel);;
+    Set(varPopup; "");
+
+    "BODING";
+    Set(varBodIng; ThisItem.Cod);;
+    Clear(colIng);;
+    Set(varPopup; "");
+
+    "BODCNT";
+    Set(varBodConteo; ThisItem.Cod);;
+    Set(varFolioCnt; "CNT-" & Text(Now(); "yyyymmddhhmmss"));;
+    Clear(colCatSel);;
+    ClearCollect(
+        colCnt;
+        ForAll(
+            Filter(INV_Existencias; ACTIVO = true; BODEGA = varBodConteo) As e;
+            {
+                Clave:       e.Title;
+                Codigo:      e.CODIGO;
+                Descripcion: e.DESCRIPCION;
+                Categoria:   e.CATEGORIA;
+                Unidad:      e.UNIDAD;
+                Sistema:     e.EXISTENCIA;
+                Fisica:      e.EXISTENCIA;
+                Contado:     false
+            }
+        )
+    );;
+    Set(varPopup; "");
+
+    "CODBOD";
+    UpdateIf(colNuevos; Fila = varFilaCod; {Bodega: ThisItem.Cod});;
+    Set(varPopup; "");
+
+    "CAT";
+    If(
+        ThisItem.Cod in colCatSel.Cat;
+        RemoveIf(colCatSel; Cat = ThisItem.Cod);
+        Collect(colCatSel; {Cat: ThisItem.Cod})
+    );
+
+    "PROY";
+    Set(varProyecto; LookUp(INV_Proyectos; Title = ThisItem.Cod));;
+    Clear(colSel);;
+    Set(varPopup; "");
+
+    "PROYING";
+    Set(varProyIng; LookUp(INV_Proyectos; Title = ThisItem.Cod));;
+    Set(varPopup; "");
+
+    "PERSONA";
+    UpdateIf(colSel; Clave = varLineaEPP; {Persona: ThisItem.Cod});;
+    Set(varPopup; "");
+
+    "PROV";
+    Set(varProveedor; LookUp(TRZ_Proveedores; Title = ThisItem.Cod));;
+    Set(varProvNuevo; "");;
+    Set(varPopup; "")
+)
+9. Conteo físico: elegir bodega, filtrar, buscar
+
+Agregas dos controles copiando otros que ya existen.
+
+Control a agregar: txtBuscarCnt — copia txtBuscar (de Salidas) y pégalo dentro de cntCntHeader
+
+Propiedad	Fórmula
+Placeholder	="Buscar codigo o descripcion"
+OnChange	=Set(varBuscarCnt; Self.Text)
+Width	=If(nfEsMovil; Parent.Width - 16; 240)
+Height	=36
+
+Control a agregar: btnCntCategoria — copia btnCatMovil y pégalo dentro de cntCntHeader
+
+Propiedad	Fórmula
+Visible	=true
+Text	=If(IsEmpty(colCatSel); "Todas las categorias   v"; CountRows(colCatSel) & " categoria(s)   v")
+OnSelect	=Set(varBuscarPop; "");; Set(varPopup; "CAT")
+Width	=If(nfEsMovil; Parent.Width - 16; 200)
+Height	=36
+
+Control: cntCntHeader → Propiedad: LayoutWrap → =true
+Control: cntCntHeader → Propiedad: Height → =If(nfEsMovil; 230; 100)
+
+Control: btnCntBodega → Propiedad: Text
+
+="Bodega:  " & Coalesce(LookUp(colAdminBod; B = varBodConteo).C; varBodConteo) & "   v"
+
+Control: btnCargarCnt → Propiedad: Text → ="Recargar"
+Control: btnCargarCnt → Propiedad: Width → =110
+
+Control: galConteo → Propiedad: Items
+
+=Filter(
+    colCnt;
+    Or(IsEmpty(colCatSel); Categoria in colCatSel.Cat);
+    Or(
+        IsBlank(varBuscarCnt);
+        StartsWith(Codigo; varBuscarCnt);
+        varBuscarCnt in Descripcion
+    )
+)
+Bloque del gerente: variable propia
+
+Hasta ahora el folio que cuenta el encargado y el folio que autoriza el gerente usaban la misma variable. Un ADMIN —que hace las dos cosas— podía "autorizar" su propio conteo antes de enviarlo y perder el folio. También btnAutorizar tomaba las filas de borrador del mismo folio y duplicaba los ajustes. Se separa en varFolioAut y se filtra solo lo ENVIADO.
+
+Control: btnVerConteo → Propiedad: OnSelect
+
+=Set(varFolioAut; ThisItem.FOLIO)
+
+Control: cntSal → Propiedad: BorderColor
+
+=If(ThisItem.FOLIO = varFolioAut; ColorValue(nfCol.Accent); ColorValue(nfCol.Line))
+
+Control: btnAutorizar → Propiedad: Visible
+
+=!IsBlank(varFolioAut) && nfEsGerente
+
+Control: btnAutorizar → Propiedad: OnSelect
+
+=Set(varGuardando; true);;
+Refresh(INV_Existencias);;
+
+ClearCollect(
+    colCntAplicar;
+    ForAll(
+        Filter(INV_Conteos; FOLIO = varFolioAut; ESTADO.Value = "ENVIADO"; APLICADO = false) As c;
+        {
+            IdCnt:  c.ID;
+            Cod:    c.CODIGO;
+            Desc:   c.DESCRIPCION;
+            Cat:    c.CATEGORIA;
+            Und:    c.UNIDAD;
+            Bod:    c.BODEGA;
+            Folio:  c.FOLIO;
+            Dif:    c.DIFERENCIA;
+            Fisica: c.EXIST_FISICA
+        }
+    )
+);;
+
+ForAll(
+    colCntAplicar As c;
+    With(
+        {ex: LookUp(INV_Existencias; Title = c.Cod & "|" & c.Bod)};
+
+        If(
+            c.Dif > 0;
+            Patch(
+                INGRESOS;
+                Defaults(INGRESOS);
+                {
+                    CODIGO:          c.Cod;
+                    FECHA:           Now();
+                    DESCRIPCION:     c.Desc;
+                    CATEGORIA:       c.Cat;
+                    CANTIDAD:        c.Dif;
+                    'UNIDAD MEDIDA': c.Und;
+                    BODEGA:          c.Bod;
+                    COSTOUNITARIO:   Coalesce(ex.COSTO_ULT; 0);
+                    COSTOTOTAL:      Coalesce(ex.COSTO_ULT; 0) * c.Dif;
+                    FACTURA:         c.Folio;
+                    PROVEEDOR:       "AJUSTE DE INVENTARIO";
+                    RESPONSABLE:     nfUser.Nombre;
+                    TIPODATA:        "INGRESO";
+                    TIPO_INGRESO:    {Value: "AJUSTE CONTEO"}
+                }
+            )
+        );;
+
+        If(
+            c.Dif < 0;
+            Patch(
+                SALIDAS;
+                Defaults(SALIDAS);
+                {
+                    CODIGO:          c.Cod;
+                    DESCRIPCION:     c.Desc;
+                    CATEGORIA:       c.Cat;
+                    SALIDA:          Abs(c.Dif);
+                    'UNIDAD MEDIDA': c.Und;
+                    'AREA USO':      "AJUSTE DE INVENTARIO";
+                    BODEGA:          c.Bod;
+                    NO_SALIDA:       c.Folio;
+                    FECHA:           Now();
+                    RESPONSABLE:     nfUser.Nombre;
+                    CORREO_SOLICITA: nfUser.Correo;
+                    TIPODATA:        "AJUSTE";
+                    CONFIRMA:        false;
+                    ESTADO:          {Value: "ENTREGADO"};
+                    ENTREGADO:       Now();
+                    CANT_ENTREGADA:  Abs(c.Dif);
+                    CANT_DEVUELTA:   0;
+                    MOTIVO_AJUSTE:   "Conteo fisico autorizado por " & nfUser.Nombre;
+                    AJUSTADO_POR:    nfPersonaUser;
+                    FECHA_AJUSTE:    Now();
+                    ProcesadoBodega: true
+                }
+            )
+        );;
+
+        Patch(INV_Existencias; ex; {EXISTENCIA: c.Fisica});;
+
+        Patch(
+            INV_Conteos;
+            LookUp(INV_Conteos; ID = c.IdCnt);
+            {
+                ESTADO:         {Value: "AUTORIZADO"};
+                APLICADO:       true;
+                AUTORIZADO_POR: nfUser.Nombre;
+                FECHA_AUTORIZA: Now()
+            }
+        )
+    )
+);;
+
+Clear(colCntAplicar);;
+Refresh(INV_Existencias);;
+Notify("Conteo " & varFolioAut & " autorizado. El sistema quedo igual al fisico."; NotificationType.Success);;
+Set(varFolioAut; "");;
+Set(varGuardando; false)
+
+Control: btnRechazar → Propiedad: Visible
+
+=!IsBlank(varFolioAut) && nfEsGerente
+
+Control: btnRechazar → Propiedad: OnSelect
+
+=UpdateIf(
+    INV_Conteos;
+    FOLIO = varFolioAut && ESTADO.Value = "ENVIADO";
+    {
+        ESTADO:         {Value: "RECHAZADO"};
+        AUTORIZADO_POR: nfUser.Nombre;
+        FECHA_AUTORIZA: Now()
+    }
+);;
+Set(varFolioAut; "");;
+Notify("Conteo rechazado. Se debe volver a contar."; NotificationType.Warning)
+10. Ingresos: los productos de la bodega aparecen solos
+
+Hoy la galería de búsqueda solo aparece si escribes 2 letras, y además filtra PRODUCTOS.ACTIVO = true —que en tus filas viejas está vacío—, así que nunca encuentra nada. El cambio:
+
+Sin escribir nada → muestra todos los productos que ya tiene esa bodega. Tocas los que llegaron y quedan marcados en verde.
+Escribiendo → busca en todo el catálogo maestro, para dar ingreso a un código que esa bodega nunca había tenido.
+
+Control: galBuscaProd → Propiedad: Visible → =true
+Control: galBuscaProd → Propiedad: Height → =If(nfEsMovil; 300; 260)
+Control: galBuscaProd → Propiedad: Items
+
+=If(
+    Len(varBuscarIng) < 2;
+
+    ForAll(
+        Filter(INV_Existencias; ACTIVO = true; BODEGA = varBodIng) As e;
+        {
+            Codigo:      e.CODIGO;
+            Descripcion: e.DESCRIPCION;
+            Categoria:   e.CATEGORIA;
+            Unidad:      e.UNIDAD;
+            Existencia:  e.EXISTENCIA
+        }
+    );
+
+    ForAll(
+        Filter(
+            PRODUCTOS;
+            Or(StartsWith(CODIGO; varBuscarIng); StartsWith(DESCRIPCION; varBuscarIng))
+        ) As p;
+        {
+            Codigo:      p.CODIGO;
+            Descripcion: p.DESCRIPCION;
+            Categoria:   p.CATEGORIA;
+            Unidad:      p.'UNIDAD MEDIDA';
+            Existencia:  Coalesce(LookUp(INV_Existencias; Title = p.CODIGO & "|" & varBodIng; EXISTENCIA); 0)
+        }
+    )
+)
+
+Control: txtBuscarIng → Propiedad: Placeholder
+
+="Buscar otro producto (vacio = productos de esta bodega)"
+
+Control: cntTarjeta_1 → Propiedad: Fill (marca en verde lo que ya está en el lote)
+
+=If(
+    !IsBlank(LookUp(colIng; Clave = ThisItem.Codigo & "|" & varBodIng; Clave));
+    ColorValue(nfCol.AccentSoft);
+    ColorValue(nfCol.Surface)
+)
+
+Control: cntTarjeta_1 → Propiedad: BorderColor
+
+=If(
+    !IsBlank(LookUp(colIng; Clave = ThisItem.Codigo & "|" & varBodIng; Clave));
+    ColorValue(nfCol.Accent);
+    ColorValue(nfCol.Line2)
+)
+
+Control: btnAgregarAIng → Propiedad: OnSelect (ahora marca y desmarca, sin borrar la búsqueda)
+
+=If(
+    !IsBlank(LookUp(colIng; Clave = ThisItem.Codigo & "|" & varBodIng; Clave));
+    RemoveIf(colIng; Clave = ThisItem.Codigo & "|" & varBodIng);
+    Collect(
+        colIng;
+        {
+            Clave:       ThisItem.Codigo & "|" & varBodIng;
+            Codigo:      ThisItem.Codigo;
+            Descripcion: ThisItem.Descripcion;
+            Categoria:   ThisItem.Categoria;
+            Unidad:      ThisItem.Unidad;
+            Existencia:  ThisItem.Existencia;
+            Cantidad:    0;
+            CostoUnit:   0;
+            Bodega:      varBodIng
+        }
+    )
+)
+
+Datos del lote arriba, una sola vez: mueve txtIngFactura de cntIngProy a cntIngCabecera, a la derecha de btnIngProv. Proveedor y factura son del lote completo, no del proyecto.
+
+Control: txtIngFactura → Propiedad: Width → =If(nfEsMovil; Parent.Width - 16; 200)
+Control: txtIngFactura → Propiedad: Placeholder → ="No. de factura (opcional)"
+
+Control: lblIngTtl → Propiedad: Text
+
+="Ingreso a " & Coalesce(LookUp(colAdminBod; B = varBodIng).N; varBodIng)
+
+Control: btnIngBodega → Propiedad: Text
+
+="Bodega:  " & Coalesce(LookUp(colAdminBod; B = varBodIng).C; varBodIng) & "   v"
+
+Control: btnIngBodega → Propiedad: DisplayMode (la encargada de BG solo tiene una bodega; no tiene sentido abrir la lista)
+
+=If(CountRows(colAdminBod) > 1; DisplayMode.Edit; DisplayMode.View)
+
+Control: tglEsProyecto → Propiedad: Label → ="Es para un proyecto"
+
+11. Crear códigos: la bodega de cada fila
+
+btnCodBodega abría la lista de bodegas de Conteo y mostraba la bodega de Conteo. Cada fila necesita su propia bodega.
+
+Control: btnCodBodega → Propiedad: OnSelect
+
+=Set(varFilaCod; ThisItem.Fila);;
+Set(varBuscarPop; "");;
+Set(varPopup; "CODBOD")
+
+Control: btnCodBodega → Propiedad: Text
+
+="Bodega:  " & Coalesce(LookUp(colCodBod; B = ThisItem.Bodega).C; ThisItem.Bodega) & "   v"
+
+Control: btnAgregarFila → Propiedad: OnSelect (la fila nueva nace en la primera bodega permitida: BG para la encargada de BG, Fontanería para mantenimiento)
+
+=Collect(
+    colNuevos;
+    {
+        Fila:       CountRows(colNuevos) + 1;
+        Categoria:  "";
+        Nombre:     "";
+        Unidad:     "";
+        Bodega:     First(Sort(colCodBod; O; SortOrder.Ascending)).B;
+        Minimo:     0;
+        Estante:    "";
+        Comprador:  "";
+        ReqPersona: false
+    }
+)
+
+Control: cmbCodCat → Propiedad: Items (incluye las categorías que ya usan las bodegas, no solo las del maestro viejo)
+
+=Sort(Distinct(INV_Existencias; CATEGORIA); Value; SortOrder.Ascending)
+12. Reportes: las tarjetas apiladas
+
+galRepKpis es una galería horizontal. En ese tipo, WrapCount es el número de filas; con 4, acomoda las cuatro tarjetas una debajo de otra en una sola columna angosta, que es lo que ves.
+
+Control: galRepKpis → Propiedad: WrapCount
+
+=If(nfEsMovil; 2; 1)
+13. Limpieza
+
+Cuando Label1 muestre bodegas y existencias correctas, borra Label1, Button2 (es una copia del botón de migración) y btnRepararBodegas. También Label5, que sigue suelto dentro de cntCuerpo.
+
+14. Cómo se usa cada pantalla
+Hacer una salida
+Menú → Salidas. Arranca en Bodega General con todos sus productos, sin tocar nada.
+(Opcional) Para otra bodega: toca su chip (PC/tablet) o el botón Bodega (teléfono).
+(Opcional) Para filtrar: toca una o varias categorías. Para buscar: escribe en el buscador.
+Toca la tarjeta del producto → queda marcada y aparece la caja de cantidad. Escribe la cantidad (o usa + / −).
+Si es EPP que pide nombre, aparece el botón rojo Asignar persona → eliges de la lista o lo creas.
+Continuar → en el carrito eliges el área de uso → Guardar salida.
+
+Si salió de Bodega General, queda PENDIENTE hasta que la encargada confirme la entrega. De cualquier otra bodega, queda ENTREGADO de una vez.
+
+Por proyecto: toca Por proyecto → elige el proyecto → aparecen los materiales que ingresaron para él → Seleccionar todo o marca solo algunos → Continuar.
+
+Hacer un ingreso
+Menú → Ingresos. Arranca en tu bodega: Bodega General para la encargada de BG, Fontanería para mantenimiento. Mantenimiento no puede elegir BG, y BG no puede elegir las de mantenimiento.
+Arriba, una sola vez para todo el lote: el Proveedor (si no existe, escríbelo en el buscador y toca Crear proveedor) y el No. de factura (opcional).
+(Opcional) Activa Es para un proyecto → eliges uno existente o escribes el nombre y Crear proyecto (genera PROYMT-01, PROYMT-02…).
+Abajo aparecen los productos de esa bodega. Toca todos los que llegaron; se ponen en verde y bajan al lote. Si es un código que esa bodega nunca tuvo, búscalo por nombre.
+En el lote, por producto: la cantidad (obligatoria) y el costo unitario (opcional). El total se calcula solo.
+Guardar ingreso. Todos los renglones se guardan con el mismo proveedor, factura y proyecto.
+Hacer un conteo físico
+Menú → Conteo físico. Carga solo los productos de tu bodega.
+(Opcional) Cambia de bodega, filtra por categoría o busca.
+Escribe la cantidad física de lo que vas contando. Los que no toques no se envían.
+Enviar a autorización → le llega un correo al gerente con la tabla de diferencias.
+El gerente entra a Conteo físico, toca el folio → CONFIRMAR (el sistema queda igual al físico) o RECHAZAR (se vuelve a contar).
+Crear un código
++ Agregar producto: una fila por producto nuevo.
+Llena categoría, nombre, unidad, bodega, y si quieres mínimo, estante, comprador y si pide nombre (EPP).
+Si aparece el aviso amarillo "Ya existe algo parecido", no lo crees: ese producto ya tiene código.
+Guardar y generar códigos.
+
+El mismo código en otra bodega no se crea dos veces. Basta con darle ingreso en esa bodega (Ingresos → buscar el código) y su fila en INV_Existencias se crea sola. Así un código aparece varias veces en la base —una por bodega—, pero en el maestro existe una sola vez.
+
+Catálogo
+
+Arranca en Bodega General. Cambias de bodega, filtras por categoría, ves solo lo que está bajo mínimo y descargas a Excel exactamente lo que estás viendo. Editar solo aparece en las bodegas que administras; Dar de baja solo para el administrador.
+
+Orden para aplicarlo: sección 1 (datos) → 2 (orden de popups) → 4 y 5 (Formulas y OnStart) → 9 (crea los dos controles de conteo) → 6 (btnRouter) → lo demás. Ejecuta OnStart, entra a Salidas, y mándame qué dice Label1 si todavía no aparecen productos.
