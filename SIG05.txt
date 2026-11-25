@@ -1,0 +1,4027 @@
+================================================================================
+SISTEMA DE INVENTARIO UNIFICADO DE BODEGAS - BTI
+VERSION 2 - Correcciones de fondo + nuevas funciones
+Fecha: 25/11/2026
+================================================================================
+
+QUE TRAE ESTA VERSION
+---------------------
+  1. Por que no aparecian productos (y la ventana roja de error) -> corregido
+  2. "Todas las bodegas" repetido muchas veces -> corregido
+  3. Busqueda por cualquier palabra (codigo, nombre, categoria, unidad, bodega,
+     estante, lote, proyecto, ingrediente), en cualquier orden
+  4. Habilitar / deshabilitar articulos (solo encargado o admin de esa bodega)
+  5. Material de proyecto APARTADO del material general (el codo de 3")
+  6. Ingresos: el lote se llena en un popup, con lote y fecha de vencimiento
+  7. Cajas de texto que se borraban -> corregido
+  8. Conteo: el borrador ya no se pierde al salir
+  9. Confirmar entrega: buscador, rango de fechas, flechas por dia, conteos
+ 10. EPP: elegir de la lista O escribir el nombre
+ 11. Un solo flujo de Excel para Catalogo y Reportes, con las columnas pedidas
+ 12. Pantalla de Accesos (usuarios, roles y permisos +/-) reutilizando tus controles
+ 13. Ingrediente activo para quimicos
+
+REGLAS DE SINTAXIS (igual que siempre)
+  ;   separa argumentos        ;;  encadena instrucciones
+  RGBA con coma decimal        GroupBy/Ungroup con comilla simple
+  Las cajas de texto (clasicas Y modernas) se leen con .Text
+
+
+################################################################################
+PARTE 0 - LA CAUSA DE FONDO (LEER PRIMERO)
+################################################################################
+
+0.1 POR QUE NO SALIAN PRODUCTOS Y SALIA LA VENTANA ROJA
+--------------------------------------------------------
+La ventana dice: "[INV_Existencias] La consulta no es valida". Es SharePoint
+rechazando la pregunta que le manda Power Apps.
+
+Revise todas las formulas. Todas las que fallan tienen la misma forma:
+
+    Filter(INV_Existencias; ...; Or(varBodega = "TODAS"; BODEGA = varBodega))
+    Filter(INV_Existencias; ...; Or(IsBlank(varBuscar); StartsWith(CODIGO; varBuscar)))
+    Filter(nfBodegasAll; Or(nfEsAdmin; ES_GENERAL = true; AREA = nfMiArea))
+    Filter(nfPersonal;    Or(IsBlank(varBuscarPop); StartsWith(Nombre; varBuscarPop)))
+
+Es decir: un Or() que mezcla una condicion sobre una VARIABLE con una condicion
+sobre una COLUMNA. Power Apps intenta mandarle eso a SharePoint como una sola
+consulta y SharePoint la rechaza.
+
+Y todas las que SI funcionan (Conteo carga 165 productos, Ingresos muestra la
+lista) usan solo  columna = valor :
+
+    Filter(INV_Existencias; ACTIVO = true; BODEGA = varBodConteo)    <- funciona
+
+LA REGLA NUEVA, PARA TODO EL SISTEMA:
+  a) A SharePoint solo se le pregunta  columna = valor  (una o varias, con ;).
+  b) Las listas chicas (bodegas, proyectos, proveedores) se traen completas y se
+     filtran en la app.
+  c) INV_Existencias se trae por bodega a una coleccion (colStock) y todo lo
+     demas (categoria, busqueda, habilitado, proyecto) se filtra en la app.
+
+Ventajas extra: la busqueda puede ser por cualquier palabra, es instantanea, y
+no hay limites de delegacion por bodega hasta 2,000 articulos.
+
+IMPORTANTE: en Configuracion > General > "Limite de filas de datos" pon 2000.
+
+
+0.2 POR QUE "TODAS LAS BODEGAS" SALIA REPETIDO
+-----------------------------------------------
+nfMisBodegas tenia  Or(nfEsAdmin; ES_GENERAL = true; AREA = nfMiArea) , que es el
+caso 0.1. Al fallar, el ClearCollect de colMisBod no se ejecutaba, pero el
+Collect de "TODAS" si. Cada vez que cambiabas de pantalla se agregaba un
+"Todas las bodegas" mas. Con las bodegas cargadas en memoria (Parte 3) y con
+Clear() antes de Collect() (Parte 5), ya no puede pasar.
+
+
+0.3 TRES DATOS QUE HAY QUE CORREGIR EN SHAREPOINT (lo vi en tus capturas)
+--------------------------------------------------------------------------
+A) INV_Bodegas: MT-FON, MT-ELE y MT-ELN tienen ES_GENERAL y CONFIRMA_ENTREGA
+   marcados. SOLO la fila BG debe tenerlos en Si.
+   Efecto si no se corrige: todos los usuarios ven todas las bodegas, y las
+   salidas de mantenimiento se quedan "PENDIENTE" esperando confirmacion.
+
+B) PRODUCTOS.REQUIERE_PERSONA e INV_Existencias.REQ_PERSONA estan marcados en
+   TODOS los productos (combustibles, electricos...). Solo va en Si el EPP que se
+   entrega a una persona.
+   Efecto si no se corrige: cada renglon de cada salida exige "Asignar persona"
+   y el boton Guardar salida queda deshabilitado.
+   -> Se corrige con el boton de la Parte 1.4.
+
+C) INV_Acceso: tu correo esta 5 veces (ADMIN, ENCARGADO, COMPRAS, GERENTE,
+   OPERATIVO). Esta bien para probar, pero ahora el sistema toma la fila que
+   tenga ACTIVO = Si. Para probar un rol, deja ACTIVO = Si solo en esa fila y
+   No en las otras.
+
+
+################################################################################
+PARTE 1 - BASE DE DATOS
+################################################################################
+
+1.1 COLUMNAS NUEVAS
+-------------------
+INV_Existencias
+   PROYECTO      Texto, INDEXADO   codigo del proyecto si el material esta apartado
+   LOTE          Texto             ultimo lote ingresado
+   VENCE         Fecha (solo fecha) fecha de vencimiento del ultimo lote
+   INGREDIENTE   Texto             ingrediente activo (quimicos)
+
+INGRESOS
+   LOTE          Texto
+   VENCE         Fecha (solo fecha)
+
+PRODUCTOS
+   INGREDIENTE   Texto
+
+INV_Conteos
+   CLAVE         Texto             llave exacta del articulo contado
+
+INV_Acceso
+   PERMISOS_EXTRA    Texto (una linea, 255)   permisos que se le AGREGAN al rol
+   PERMISOS_QUITAR   Texto (una linea, 255)   permisos que se le QUITAN al rol
+
+
+1.2 LA LLAVE DE CADA ARTICULO (Title de INV_Existencias)
+---------------------------------------------------------
+   Material general:         CODIGO|BODEGA                 COMB01|BG
+   Material de un proyecto:  CODIGO|BODEGA|PROYECTO        CODO03|MT-FON|PROYMT-01
+
+Es decir: el mismo codo de 3" puede estar dos veces en la misma bodega, una
+para cualquiera y otra apartada para el proyecto. Cada una tiene su existencia.
+  - "Por unidad" en Salidas solo muestra el material general.
+  - "Por proyecto" solo muestra el material de ese proyecto.
+  - Catalogo y Conteo muestran ambos, con etiqueta de proyecto.
+
+CAMBIO RESPECTO A LO QUE TE DIJE ANTES: antes el proyecto no apartaba
+existencia. Con tu ejemplo del codo queda claro que si hay que apartarla, si no
+otra persona podia sacar el material del proyecto por "unidad".
+
+
+1.3 COMO SE MANTIENEN SINCRONIZADAS PRODUCTOS E INV_Existencias
+----------------------------------------------------------------
+NO hay que presionar ningun boton. El boton de migracion era de UNA sola vez y
+ya lo usaste. Desde ahora cada accion de la app actualiza todo sola:
+
+  ACCION                  PRODUCTOS              INV_Existencias          INGRESOS / SALIDAS
+  ----------------------- ---------------------- ------------------------ ----------------------
+  Crear codigo            crea el codigo         crea la fila en la       -
+                                                 bodega elegida (0)
+  Ingreso                 recalcula EXISTENCIA   suma; si es la primera   1 fila por producto
+                          total                  vez en esa bodega o      en INGRESOS
+                                                 proyecto, crea la fila
+  Salida                  recalcula total        resta                    1 fila en SALIDAS
+  Confirmar entrega con   recalcula total        suma lo devuelto         fila DEVOLUCION en
+  devolucion                                                              INGRESOS
+  Conteo autorizado       recalcula total        queda igual al fisico    AJUSTE en INGRESOS
+                                                                          o en SALIDAS
+  Baja                    recalcula total        resta                    AJUSTE en SALIDAS
+  Editar articulo         nombre, unidad,        nombre y unidad en       -
+                          ingrediente            TODAS sus bodegas
+  Habilitar/deshabilitar  -                      ACTIVO                   -
+
+  INV_Existencias es la verdad.  PRODUCTOS.EXISTENCIA es solo el total de todas
+  las bodegas, que la app recalcula para que tus reportes viejos sigan sirviendo.
+
+CUATRO REGLAS PARA QUE SIEMPRE CUADRE
+  1. Nunca editar EXISTENCIA a mano en SharePoint. Si hay diferencia, se usa
+     Conteo fisico (queda el registro y la autorizacion).
+  2. Nunca crear productos directo en SharePoint. Siempre por Crear codigos.
+  3. La app vieja (ESTRUCTURA-BO) tiene que dejar de registrar salidas e
+     ingresos el dia que esta entre en uso. Esa app escribe EXISTENCIA directo
+     en PRODUCTOS y no sabe que existe INV_Existencias.
+  4. Borra Button2 y btnRepararBodegas de cntVMenu. Ya cumplieron.
+
+
+1.4 BOTON DE CORRECCION DE EPP (una sola vez, luego se borra)
+--------------------------------------------------------------
+CONTROL NUEVO : btnCorregirEPP
+TIPO          : Classic/Button
+UBICACION     : cntVMenu (temporal)
+
+PROPIEDAD Text:
+="Corregir EPP (una vez)"
+
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=UpdateIf(PRODUCTOS; CATEGORIA <> nfCatEPP; {REQUIERE_PERSONA: false});;
+UpdateIf(INV_Existencias; CATEGORIA <> nfCatEPP; {REQ_PERSONA: false});;
+ForAll(
+    Filter(PRODUCTOS; CATEGORIA = nfCatEPP) As p;
+    With(
+        {
+            pide: !IsMatch(
+                p.CODIGO;
+                "^(EQUI53|EQUI54|EQUI55|EQUI147|EQUI118|EQUI21|EQUI22|EQUI23|EQUI24|EQUI27|EQUI56|EQUI57|EQUI58|VARI1220|EQUI103|EQUI104|EQUI105|MATE1184|EQUI1231)$"
+            )
+        };
+        Patch(PRODUCTOS; p; {REQUIERE_PERSONA: pide});;
+        UpdateIf(INV_Existencias; CODIGO = p.CODIGO; {REQ_PERSONA: pide})
+    )
+);;
+Notify("EPP corregido."; NotificationType.Success)
+--------------------------------------------------------------------------------
+Y en SharePoint, en las dos columnas, pon Valor predeterminado = No.
+
+
+################################################################################
+PARTE 2 - QUIEN PUEDE HACER QUE (PERMISOS)
+################################################################################
+
+2.1 COMO FUNCIONA AHORA
+-----------------------
+Cada usuario tiene UN rol y UN area en INV_Acceso. El rol trae permisos por
+defecto. En la pantalla de Accesos (Parte 13) le puedes AGREGAR (+) o QUITAR (-)
+permisos sueltos a una persona, sin publicar la app.
+
+PERMISOS (claves)
+   sal     Registrar salidas
+   ent     Confirmar entrega (Bodega General)
+   ing     Registrar ingresos
+   cont    Conteo fisico
+   aut     Autorizar conteos
+   cod     Crear codigos en sus bodegas
+   codall  Crear codigos en cualquier bodega
+   cat     Ver catalogo
+   xls     Descargar Excel del catalogo
+   edit    Editar, habilitar y deshabilitar articulos
+   rep     Reportes
+   baja    Dar de baja
+   acc     Administrar accesos
+
+ROLES Y SUS PERMISOS POR DEFECTO
+   ADMIN              todos
+   ENCARGADO BODEGA   sal cat xls ing cont cod edit rep
+                      + ent y codall si su AREA es BODEGA GENERAL
+   COMPRAS            sal cat xls ing
+   GERENTE            sal cat xls aut rep
+   OPERATIVO          sal cat xls
+
+QUE BODEGAS VE CADA UNO
+   Ve (Salidas, Catalogo):     Bodega General siempre + las de su AREA
+   Administra (Ingresos,       las de su AREA (si tiene ing, cont, edit o rep)
+   Conteo, Reportes, Editar):  + las que tengan su correo en CORREO_ENCARGADO
+   Crea codigos en:            todas si tiene codall; si no, las que administra
+   ADMIN:                      todas
+
+
+################################################################################
+PARTE 3 - App.Formulas  (REEMPLAZAR EL BLOQUE COMPLETO)
+################################################################################
+
+UBICACION: App > Formulas
+
+--------------------------------------------------------------------------------
+nfCol = {
+    Bg:          "#EDF1F4";
+    Surface:     "#FFFFFF";
+    Surface2:    "#F5F8FA";
+    Surface3:    "#E7EDF1";
+    Ink:         "#14202B";
+    Muted:       "#55657A";
+    Faint:       "#8595A8";
+    Line:        "#D3DCE4";
+    Line2:       "#E6ECF1";
+    Nav:         "#1E3050";
+    Nav2:        "#2E4873";
+    NavInk:      "#E2EAF5";
+    NavMut:      "#92A6C2";
+    NavSel:      "#F0B429";
+    NavSelTxt:   "#0B1E38";
+    Accent:      "#157F5B";
+    Accent2:     "#1FA172";
+    AccentSoft:  "#D8EFE5";
+    AccentInk:   "#0A4A35";
+    Blue:        "#1F6FB2";   BlueSoft:   "#DBEAF7";
+    Amber:       "#9A6207";   AmberSoft:  "#FAEBD0";
+    Red:         "#A62B2B";   RedSoft:    "#F8DEDE";
+    Violet:      "#5A4B9C";   VioletSoft: "#E6E2F5";
+    Slate:       "#495A6B";   SlateSoft:  "#E2E8EE"
+};;
+
+nfCorteMovil = 760;;
+nfAnchoNav   = 212;;
+nfAltoBarra  = 54;;
+nfRadio      = 10;;
+nfPad        = 16;;
+nfEsMovil    = App.Width < nfCorteMovil;;
+
+nfUser = {
+    Nombre: User().FullName;
+    Correo: Lower(User().Email)
+};;
+
+nfPersonaUser = {
+    '@odata.type': "#Microsoft.Azure.Connectors.SharePoint.SPListExpandedUser";
+    Claims:      "i:0#.f|membership|" & Lower(User().Email);
+    DisplayName: User().FullName;
+    Email:       Lower(User().Email);
+    Department:  "";
+    JobTitle:    "";
+    Picture:     ""
+};;
+
+/* ================= PERMISOS ================= */
+nfCatPermisos = Table(
+    {Clave: "sal";    Grupo: "Salidas";  Etiqueta: "Registrar salidas";                 Descripcion: "Sacar material de las bodegas que ve."};
+    {Clave: "ent";    Grupo: "Salidas";  Etiqueta: "Confirmar entrega";                 Descripcion: "Confirmar y devolver lo no recogido en Bodega General."};
+    {Clave: "ing";    Grupo: "Ingresos"; Etiqueta: "Registrar ingresos";                Descripcion: "Dar ingreso en las bodegas que administra."};
+    {Clave: "cont";   Grupo: "Conteo";   Etiqueta: "Conteo fisico";                     Descripcion: "Contar y enviar diferencias a autorizacion."};
+    {Clave: "aut";    Grupo: "Conteo";   Etiqueta: "Autorizar conteos";                 Descripcion: "Confirmar o rechazar ajustes de inventario."};
+    {Clave: "cod";    Grupo: "Catalogo"; Etiqueta: "Crear codigos";                     Descripcion: "Crear codigos en las bodegas que administra."};
+    {Clave: "codall"; Grupo: "Catalogo"; Etiqueta: "Crear codigos en cualquier bodega"; Descripcion: "Normalmente solo la encargada de Bodega General."};
+    {Clave: "cat";    Grupo: "Catalogo"; Etiqueta: "Ver catalogo";                      Descripcion: "Existencias de las bodegas que ve."};
+    {Clave: "xls";    Grupo: "Catalogo"; Etiqueta: "Descargar Excel";                   Descripcion: "Descargar lo filtrado del catalogo."};
+    {Clave: "edit";   Grupo: "Catalogo"; Etiqueta: "Editar y habilitar articulos";      Descripcion: "Cambiar nombre, minimo, habilitar o deshabilitar."};
+    {Clave: "rep";    Grupo: "Reportes"; Etiqueta: "Reportes";                          Descripcion: "Movimientos y costos de las bodegas que administra."};
+    {Clave: "baja";   Grupo: "Catalogo"; Etiqueta: "Dar de baja";                       Descripcion: "Retirar material danado o perdido."};
+    {Clave: "acc";    Grupo: "Sistema";  Etiqueta: "Administrar accesos";               Descripcion: "Usuarios, roles y permisos."}
+);;
+
+nfRoles = Table(
+    {Title: "ADMIN";            Permisos: "*"};
+    {Title: "ENCARGADO BODEGA"; Permisos: "sal;cat;xls;ing;cont;cod;edit;rep"};
+    {Title: "COMPRAS";          Permisos: "sal;cat;xls;ing"};
+    {Title: "GERENTE";          Permisos: "sal;cat;xls;aut;rep"};
+    {Title: "OPERATIVO";        Permisos: "sal;cat;xls"}
+);;
+
+nfMiAcceso = LookUp(INV_Acceso; Title = nfUser.Correo && ACTIVO = true);;
+nfMiArea   = Coalesce(nfMiAcceso.AREA; "SIN AREA");;
+nfMiRol    = Coalesce(nfMiAcceso.ROL.Value; "OPERATIVO");;
+nfEsAdmin  = nfMiRol = "ADMIN";;
+nfRutaBG   = Coalesce(nfMiAcceso.RUTA_BG; false);;
+
+nfPermRol =
+    Lower(Coalesce(LookUp(nfRoles; Title = nfMiRol).Permisos; "")) &
+    If(And(nfMiRol = "ENCARGADO BODEGA"; nfMiArea = "BODEGA GENERAL"); ";ent;codall"; "");;
+nfPermExtra  = ";" & Lower(Coalesce(nfMiAcceso.PERMISOS_EXTRA; "")) & ";";;
+nfPermQuitar = ";" & Lower(Coalesce(nfMiAcceso.PERMISOS_QUITAR; "")) & ";";;
+
+nfMisPermisos = Filter(
+    nfCatPermisos;
+    Or(
+        nfPermRol = "*";
+        (";" & Clave & ";") in (";" & nfPermRol & ";");
+        (";" & Clave & ";") in nfPermExtra
+    ) && !((";" & Clave & ";") in nfPermQuitar)
+);;
+
+nfP_Sal    = "sal"    in nfMisPermisos.Clave;;
+nfP_Ent    = "ent"    in nfMisPermisos.Clave;;
+nfP_Ing    = "ing"    in nfMisPermisos.Clave;;
+nfP_Cont   = "cont"   in nfMisPermisos.Clave;;
+nfP_Aut    = "aut"    in nfMisPermisos.Clave;;
+nfP_Cod    = "cod"    in nfMisPermisos.Clave;;
+nfP_CodAll = "codall" in nfMisPermisos.Clave;;
+nfP_Cat    = "cat"    in nfMisPermisos.Clave;;
+nfP_Xls    = "xls"    in nfMisPermisos.Clave;;
+nfP_Edit   = "edit"   in nfMisPermisos.Clave;;
+nfP_Rep    = "rep"    in nfMisPermisos.Clave;;
+nfP_Baja   = "baja"   in nfMisPermisos.Clave;;
+nfP_Acc    = "acc"    in nfMisPermisos.Clave;;
+
+/* ================= BODEGAS (se traen completas y se filtran aqui) ================= */
+nfBodegasAll = Sort(
+    Filter(
+        ForAll(
+            INV_Bodegas As r;
+            {
+                Title:            r.Title;
+                NOMBRE:           r.NOMBRE;
+                CORTO:            r.CORTO;
+                AREA:             r.AREA;
+                ES_GENERAL:       r.ES_GENERAL;
+                CONFIRMA_ENTREGA: r.CONFIRMA_ENTREGA;
+                PREFIJO_PROYECTO: r.PREFIJO_PROYECTO;
+                CORREO_AUTORIZA:  r.CORREO_AUTORIZA;
+                CORREO_ENCARGADO: r.CORREO_ENCARGADO;
+                ORDEN:            r.ORDEN;
+                ACTIVA:           r.ACTIVA
+            }
+        );
+        ACTIVA = true
+    );
+    ORDEN;
+    SortOrder.Ascending
+);;
+
+nfMisBodegas = Filter(
+    nfBodegasAll;
+    Or(nfEsAdmin; ES_GENERAL = true; AREA = nfMiArea)
+);;
+
+nfBodegasAdmin = Filter(
+    nfBodegasAll;
+    Or(
+        nfEsAdmin;
+        And(Or(nfP_Ing; nfP_Cont; nfP_Edit; nfP_Rep); AREA = nfMiArea);
+        Lower(Coalesce(CORREO_ENCARGADO; "")) = nfUser.Correo
+    )
+);;
+
+nfBodegasCodigo = If(nfP_CodAll; nfBodegasAll; nfBodegasAdmin);;
+
+nfBodegaGral     = LookUp(nfBodegasAll; ES_GENERAL = true);;
+nfBodegaDefault  = Coalesce(nfBodegaGral.Title; First(nfMisBodegas).Title);;
+nfBodegaAdminDef = Coalesce(
+    LookUp(nfBodegasAdmin; ES_GENERAL = true).Title;
+    First(nfBodegasAdmin).Title
+);;
+nfBodegasEnc = nfBodegasAdmin;;
+
+/* ================= LO QUE HABILITA CADA PANTALLA ================= */
+nfEsBodegaGral  = nfP_Ent;;
+nfEsGerente     = nfP_Aut;;
+nfPuedeIngresar = nfP_Ing  && CountRows(nfBodegasAdmin) > 0;;
+nfPuedeContar   = nfP_Cont && CountRows(nfBodegasAdmin) > 0;;
+nfPuedeCrearCod = nfP_Cod  && CountRows(nfBodegasCodigo) > 0;;
+nfPuedeReporte  = nfP_Rep  && CountRows(nfBodegasAdmin) > 0;;
+nfPuedeEditar   = nfP_Edit;;
+nfPuedeExcel    = nfP_Xls;;
+nfPuedeBaja     = nfP_Baja;;
+nfPuedeAcc      = nfP_Acc;;
+
+/* ================= CATALOGOS PEQUENOS (en memoria) ================= */
+nfProyectos = Sort(
+    Filter(
+        ForAll(
+            INV_Proyectos As p;
+            {
+                Title:        p.Title;
+                NOMBRE:       p.NOMBRE;
+                AREA:         p.AREA;
+                PREFIJO:      p.PREFIJO;
+                CORRELATIVO:  p.CORRELATIVO;
+                ESTADO:       p.ESTADO.Value;
+                FECHA_INICIO: p.FECHA_INICIO
+            }
+        );
+        ESTADO = "ABIERTO"
+    );
+    Title;
+    SortOrder.Descending
+);;
+
+nfMisProyectos = Filter(nfProyectos; Or(nfEsAdmin; AREA = nfMiArea));;
+
+nfProveedores = Sort(
+    Filter(
+        ForAll(
+            TRZ_Proveedores As v;
+            {Title: v.Title; Telefono: v.Telefono; Nit: v.Nit; Contacto: v.Contacto; Activo: v.Activo}
+        );
+        Activo = true
+    );
+    Title;
+    SortOrder.Ascending
+);;
+
+nfPersonal = Sort(
+    ForAll(
+        Filter(CATALOGO_PERSONAL1; Activo = "SI") As q;
+        {Nombre: q.Nombre; Depto: Coalesce(q.DEPARTAMENTO; ""); Codigo: Coalesce(q.CODIGO; "")}
+    );
+    Nombre;
+    SortOrder.Ascending
+);;
+
+nfAreasUso = [
+    "CROP";
+    "MANTENIMIENTO";
+    "COCINA";
+    "TOMATE";
+    "CHILES";
+    "CUCURBITACEAS";
+    "SPA";
+    "CONSERJERIA";
+    "SITE OPERATION";
+    "ADMINISTRACION"
+];;
+
+nfCatEPP = "EQUIPO DE SEGURIDAD INDUSTRIAL";;
+
+nfMeses = Table(
+    {N: 1;  Etq: "Enero"};      {N: 2;  Etq: "Febrero"};   {N: 3;  Etq: "Marzo"};
+    {N: 4;  Etq: "Abril"};      {N: 5;  Etq: "Mayo"};      {N: 6;  Etq: "Junio"};
+    {N: 7;  Etq: "Julio"};      {N: 8;  Etq: "Agosto"};    {N: 9;  Etq: "Septiembre"};
+    {N: 10; Etq: "Octubre"};    {N: 11; Etq: "Noviembre"}; {N: 12; Etq: "Diciembre"}
+);;
+
+/* ================= CONTADORES DEL MENU ================= */
+nfPorEntregar = Filter(SALIDAS; ESTADO.Value = "PENDIENTE"; CONFIRMA = true);;
+nfConteosMios = Filter(INV_Conteos; ESTADO.Value = "ENVIADO"; CORREO_AUTORIZA = nfUser.Correo);;
+nfBajoMinimo  = Filter(
+    ForAll(
+        Filter(INV_Existencias; MINIMO > 0) As e;
+        {Act: e.ACTIVO; Ex: e.EXISTENCIA; Mi: e.MINIMO}
+    );
+    Act = true && Ex <= Mi
+);;
+
+nfCtaPorEntregar = CountRows(nfPorEntregar);;
+nfCtaConteos     = CountRows(nfConteosMios);;
+nfCtaBajoMin     = CountRows(nfBajoMinimo);;
+
+/* ================= REGISTROS VACIOS (dan forma a las colecciones) ================= */
+nfStockVacio = {
+    Id:          0;
+    Clave:       "";
+    Codigo:      "";
+    Descripcion: "";
+    Categoria:   "";
+    Bodega:      "";
+    BodegaNom:   "";
+    Proyecto:    "";
+    Unidad:      "";
+    Existencia:  0;
+    Minimo:      0;
+    Estante:     "";
+    Comprador:   "";
+    ReqPersona:  false;
+    Costo:       0;
+    Habilitado:  true;
+    Lote:        "";
+    VenceTxt:    "";
+    Ingrediente: "";
+    Busca:       ""
+};;
+
+nfLineaVacia = {
+    Clave:        "";
+    Codigo:       "";
+    Descripcion:  "";
+    Categoria:    "";
+    Bodega:       "";
+    Unidad:       "";
+    Existencia:   0;
+    Cantidad:     1;
+    Minimo:       0;
+    CorreoCompra: "";
+    ReqPersona:   false;
+    Persona:      "";
+    Proyecto:     "";
+    ProyectoNom:  ""
+};;
+
+nfIngVacio = {
+    Clave:       "";
+    Codigo:      "";
+    Descripcion: "";
+    Categoria:   "";
+    Unidad:      "";
+    Existencia:  0;
+    Cantidad:    0;
+    CostoUnit:   0;
+    Bodega:      "";
+    Lote:        "";
+    Vence:       Today();
+    ReqPersona:  false;
+    Ingrediente: ""
+};;
+
+nfConteoVacio = {
+    Clave:       "";
+    Codigo:      "";
+    Descripcion: "";
+    Categoria:   "";
+    Unidad:      "";
+    Sistema:     0;
+    Fisica:      0;
+    Contado:     false
+};;
+
+nfCodVacio = {
+    Fila:        0;
+    Categoria:   "";
+    Nombre:      "";
+    Unidad:      "";
+    Bodega:      "";
+    Minimo:      0;
+    Estante:     "";
+    Comprador:   "";
+    ReqPersona:  false
+};;
+
+/* ================= MENU ================= */
+nfMenu = Table(
+    {Pant: "MENU"; Etiqueta: "Menu principal";    Ico: "HOME";  Cta: 0;                Ver: true};
+    {Pant: "SAL";  Etiqueta: "Salidas";           Ico: "TREND"; Cta: 0;                Ver: nfP_Sal};
+    {Pant: "ENT";  Etiqueta: "Confirmar entrega"; Ico: "CHECK"; Cta: nfCtaPorEntregar; Ver: nfP_Ent};
+    {Pant: "ING";  Etiqueta: "Ingresos";          Ico: "DOWN";  Cta: 0;                Ver: nfPuedeIngresar};
+    {Pant: "CONT"; Etiqueta: "Conteo fisico";     Ico: "ITEMS"; Cta: nfCtaConteos;     Ver: Or(nfPuedeContar; nfP_Aut)};
+    {Pant: "COD";  Etiqueta: "Crear codigos";     Ico: "ADD";   Cta: 0;                Ver: nfPuedeCrearCod};
+    {Pant: "CAT";  Etiqueta: "Catalogo";          Ico: "LIST";  Cta: nfCtaBajoMin;     Ver: nfP_Cat};
+    {Pant: "REP";  Etiqueta: "Reportes";          Ico: "CHART"; Cta: 0;                Ver: nfPuedeReporte};
+    {Pant: "BAJA"; Etiqueta: "Bajas";             Ico: "TRASH"; Cta: 0;                Ver: nfP_Baja};
+    {Pant: "ACC";  Etiqueta: "Accesos";           Ico: "LOCK";  Cta: 0;                Ver: nfP_Acc}
+);;
+
+nfBotonesMenu = Table(
+    {
+        Pant: "SAL"; Ico: "TREND"; Titulo: "Registrar salida";
+        Detalle: "Por proyecto o por unidad. El material se descuenta de la bodega que seleccione.";
+        Cta: 0; Ver: nfP_Sal
+    };
+    {
+        Pant: "ENT"; Ico: "CHECK"; Titulo: "Confirmar entrega";
+        Detalle: "Lo solicitado que todavia no recogen. Aqui se devuelve a bodega lo que no se llevaron.";
+        Cta: nfCtaPorEntregar; Ver: nfP_Ent
+    };
+    {
+        Pant: "ING"; Ico: "DOWN"; Titulo: "Ingreso de compra";
+        Detalle: "Varios productos de un mismo proveedor y una misma factura, con o sin proyecto.";
+        Cta: 0; Ver: nfPuedeIngresar
+    };
+    {
+        Pant: "CONT"; Ico: "ITEMS"; Titulo: "Conteo fisico";
+        Detalle: "Compare fisico contra sistema y envie la diferencia a autorizacion del gerente.";
+        Cta: nfCtaConteos; Ver: Or(nfPuedeContar; nfP_Aut)
+    };
+    {
+        Pant: "COD"; Ico: "ADD"; Titulo: "Crear codigos";
+        Detalle: "Un codigo por producto para toda la empresa.";
+        Cta: 0; Ver: nfPuedeCrearCod
+    };
+    {
+        Pant: "CAT"; Ico: "LIST"; Titulo: "Catalogo y existencias";
+        Detalle: "Que hay en cada bodega, que esta bajo minimo y descarga a Excel.";
+        Cta: nfCtaBajoMin; Ver: nfP_Cat
+    };
+    {
+        Pant: "REP"; Ico: "CHART"; Titulo: "Reportes";
+        Detalle: "Ingresos, salidas, existencias y costos del periodo, en Excel.";
+        Cta: 0; Ver: nfPuedeReporte
+    };
+    {
+        Pant: "ACC"; Ico: "LOCK"; Titulo: "Accesos";
+        Detalle: "Usuarios, roles y permisos. Los cambios aplican sin publicar.";
+        Cta: 0; Ver: nfP_Acc
+    }
+);;
+--------------------------------------------------------------------------------
+
+NOTA: se eliminaron nfProductos, nfExistencias y nfCategorias porque ya no los
+usa ningun control. Si al pegar te marca error en algun control que los use,
+avisame cual.
+
+
+3.1 ICONOS (agregar el candado de Accesos)
+------------------------------------------
+CONTROL: icoNavItem (dentro de galNav)
+PROPIEDAD Icon:
+=Switch(
+    ThisItem.Ico;
+    "HOME";  Icon.Home;
+    "ADD";   Icon.Add;
+    "TREND"; Icon.ArrowUp;
+    "CHECK"; Icon.Check;
+    "DOWN";  Icon.Download;
+    "ITEMS"; Icon.Items;
+    "LIST";  Icon.BulletedList;
+    "CHART"; Icon.Printing;
+    "TRASH"; Icon.Trash;
+    "LOCK";  Icon.Lock;
+    Icon.CollapseView
+)
+
+CONTROL: icoBtnTile (dentro de galBotones)
+PROPIEDAD Icon:  (la misma formula de arriba)
+
+CONTROL: lblTitulo (dentro de cntBarra > cntTitulos)
+PROPIEDAD Text:
+=Switch(
+    varPantalla;
+    "MENU"; "Inventario de bodegas";
+    "SAL";  "Salidas";
+    "ENT";  "Confirmar entrega";
+    "ING";  "Ingresos";
+    "CONT"; "Conteo fisico";
+    "COD";  "Crear codigos";
+    "CAT";  "Catalogo y existencias";
+    "REP";  "Reportes";
+    "BAJA"; "Bajas";
+    "ACC";  "Usuarios y permisos";
+    "Inventario"
+)
+
+
+################################################################################
+PARTE 4 - App.OnStart  (REEMPLAZAR EL BLOQUE COMPLETO)
+################################################################################
+
+--------------------------------------------------------------------------------
+Set(varPantalla;    "MENU");;
+Set(varPopup;       "");;
+Set(varGuardando;   false);;
+Set(varNavAbierto;  false);;
+Set(varDescargando; false);;
+
+/* CARGA DE STOCK */
+Set(varBodStock;  nfBodegaDefault);;
+Set(varProyStock; "");;
+
+/* SALIDAS */
+Set(varModoSal;   "UNIDAD");;
+Set(varBodega;    nfBodegaDefault);;
+Set(varBuscar;    "");;
+Set(varNoSalida;  "");;
+Set(varAreaUso;   "");;
+Set(varProyecto;  LookUp(INV_Proyectos; false));;
+Set(varLineaEPP;  "");;
+Set(varBuscarPop; "");;
+
+/* CONFIRMAR ENTREGA */
+Set(varEntDesde;  Today());;
+Set(varEntHasta;  Today());;
+Set(varBuscarEnt; "");;
+
+/* CATALOGO */
+Set(varBodCat;    nfBodegaDefault);;
+Set(varBuscarCat; "");;
+Set(varSoloMin;   false);;
+Set(varVerEstado; "HAB");;
+Set(varEditArt;   LookUp(INV_Existencias; false));;
+
+/* INGRESOS */
+Set(varBodIng;     nfBodegaAdminDef);;
+Set(varProveedor;  LookUp(TRZ_Proveedores; false));;
+Set(varProvNuevo;  "");;
+Set(varProvTel;    "");;
+Set(varFactura;    "");;
+Set(varProyIng;    LookUp(INV_Proyectos; false));;
+Set(varBuscarIng;  "");;
+Set(varEsProyecto; false);;
+
+/* CONTEO */
+Set(varBodConteo; nfBodegaAdminDef);;
+Set(varFolioCnt;  "");;
+Set(varFolioAut;  "");;
+Set(varFolioBorr; "");;
+Set(varBuscarCnt; "");;
+
+/* CODIGOS */
+Set(varFilaCod; 0);;
+Set(varProyNom;  "");;
+Set(varLinkExcel; "");;
+
+/* REPORTES */
+Set(varBodRep;  nfBodegaAdminDef);;
+Set(varMesIni;  Month(Now()));;
+Set(varMesFin;  Month(Now()));;
+Set(varAnioRep; Year(Now()));;
+Set(varRepDesde; Today());;
+Set(varRepHasta; Today());;
+
+/* ACCESOS */
+Set(varAccEdit;   Blank());;
+Set(varBuscarAcc; "");;
+
+/* COLECCIONES (se crean con su forma y se vacian) */
+ClearCollect(colStock;   nfStockVacio);;   Clear(colStock);;
+ClearCollect(colSel;     nfLineaVacia);;   Clear(colSel);;
+ClearCollect(colIng;     nfIngVacio);;     Clear(colIng);;
+ClearCollect(colCnt;     nfConteoVacio);;  Clear(colCnt);;
+ClearCollect(colNuevos;  nfCodVacio);;     Clear(colNuevos);;
+ClearCollect(colCatSel;  {Cat: ""});;      Clear(colCatSel);;
+ClearCollect(colAccExtra;  {Clave: ""});;  Clear(colAccExtra);;
+ClearCollect(colAccQuitar; {Clave: ""});;  Clear(colAccQuitar);;
+ClearCollect(
+    colRep;
+    {
+        Tipo: ""; Codigo: ""; Fecha: Today(); FechaTxt: ""; Mes: ""; Anio: 0;
+        Descripcion: ""; Ingreso: 0; Salida: 0; Existencia: 0; CostoUnit: 0; CostoTotal: 0;
+        Proveedor: ""; VenceTxt: ""; Bodega: ""; Minimo: 0; ReqPersona: false; Proyecto: ""; Destino: ""
+    }
+);;
+Clear(colRep);;
+ClearCollect(
+    colRepStock;
+    {Codigo: ""; Proyecto: ""; Existencia: 0; Minimo: 0; ReqPersona: false; Costo: 0}
+);;
+Clear(colRepStock);;
+Clear(colErroresStock);;
+Clear(colBajoMinimo);;
+Clear(colEntrega);;
+
+/* BODEGAS */
+Clear(colMisBod);;
+Collect(colMisBod; ForAll(nfMisBodegas As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN}));;
+Collect(colMisBod; {B: "TODAS"; N: "Todas las bodegas"; C: "TODAS"; O: 99});;
+Clear(colAdminBod);;
+Collect(colAdminBod; ForAll(nfBodegasAdmin As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN}));;
+Clear(colCodBod);;
+Collect(colCodBod; ForAll(nfBodegasCodigo As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN}))
+--------------------------------------------------------------------------------
+
+
+################################################################################
+PARTE 5 - LOS TRES BOTONES INVISIBLES (motor de la app)
+################################################################################
+
+Los tres van como HIJOS DIRECTOS de scrPrincipal, juntos.
+En la Vista de arbol deben quedar hasta arriba, en este orden:
+
+   btnRouter
+   btnCargarStock     <- NUEVO
+   btnCargarConteo    <- NUEVO
+   cntPopLista
+   recScrimLista
+   cntPopIng          <- NUEVO (Parte 8)
+   recScrimIng        <- NUEVO (Parte 8)
+   cntPopForm
+   recScrimForm
+   cntPopCarrito
+   recScrimPop
+   cntNav
+   recScrimNav
+   cntCuerpo
+
+Como crearlos: selecciona btnRouter, Ctrl+C, Ctrl+V dos veces, renombra las
+copias. Las tres tienen Visible = false.
+
+
+5.1 btnCargarStock  (NUEVO)
+---------------------------
+Trae de SharePoint los articulos de una bodega (o de todas las mias, o de un
+proyecto) a la coleccion colStock. Salidas, Catalogo e Ingresos leen de ahi.
+Usa SOLO preguntas  columna = valor , que SharePoint siempre acepta.
+
+Se dispara con:  Set(varBodStock; "BG");; Set(varProyStock; "");; Select(btnCargarStock)
+
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Clear(colStock);;
+ForAll(
+    If(
+        !IsBlank(varProyStock);
+        Table({B: "@PROY"});
+        varBodStock = "TODAS";
+        ForAll(Filter(colMisBod; B <> "TODAS") As m; {B: m.B});
+        Table({B: varBodStock})
+    ) As b;
+    Collect(
+        colStock;
+        ForAll(
+            If(
+                b.B = "@PROY";
+                Filter(INV_Existencias; PROYECTO = varProyStock);
+                Filter(INV_Existencias; BODEGA = b.B)
+            ) As e;
+            {
+                Id:          e.ID;
+                Clave:       e.Title;
+                Codigo:      e.CODIGO;
+                Descripcion: e.DESCRIPCION;
+                Categoria:   e.CATEGORIA;
+                Bodega:      e.BODEGA;
+                BodegaNom:   Coalesce(LookUp(nfBodegasAll; Title = e.BODEGA).NOMBRE; e.BODEGA);
+                Proyecto:    Coalesce(e.PROYECTO; "");
+                Unidad:      Coalesce(e.UNIDAD; "");
+                Existencia:  Coalesce(e.EXISTENCIA; 0);
+                Minimo:      Coalesce(e.MINIMO; 0);
+                Estante:     Coalesce(e.ESTANTE; "");
+                Comprador:   Coalesce(e.CorreoComprador; "");
+                ReqPersona:  Coalesce(e.REQ_PERSONA; false);
+                Costo:       Coalesce(e.COSTO_ULT; 0);
+                Habilitado:  Coalesce(e.ACTIVO; false);
+                Lote:        Coalesce(e.LOTE; "");
+                VenceTxt:    If(IsBlank(e.VENCE); ""; Text(e.VENCE; "dd/mm/yyyy"));
+                Ingrediente: Coalesce(e.INGREDIENTE; "");
+                Busca:       Lower(
+                                 e.CODIGO & " " & e.DESCRIPCION & " " & e.CATEGORIA & " " &
+                                 Coalesce(e.UNIDAD; "") & " " & e.BODEGA & " " &
+                                 Coalesce(e.ESTANTE; "") & " " & Coalesce(e.PROYECTO; "") & " " &
+                                 Coalesce(e.LOTE; "") & " " & Coalesce(e.INGREDIENTE; "")
+                             )
+            }
+        )
+    )
+)
+--------------------------------------------------------------------------------
+
+
+5.2 btnCargarConteo  (NUEVO)
+----------------------------
+Carga los articulos de la bodega a contar y, si hay un BORRADOR guardado de esa
+bodega, lo recupera. Esto arregla que el conteo se perdiera al salir.
+
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Refresh(INV_Existencias);;
+Set(varFolioCnt;  "CNT-" & Text(Now(); "yyyymmddhhmmss"));;
+Set(varBuscarCnt; "");;
+Reset(txtBuscarCnt);;
+Clear(colCatSel);;
+ClearCollect(
+    colCnt;
+    ForAll(
+        Filter(INV_Existencias; BODEGA = varBodConteo; ACTIVO = true) As e;
+        {
+            Clave:       e.Title;
+            Codigo:      e.CODIGO;
+            Descripcion: e.DESCRIPCION;
+            Categoria:   e.CATEGORIA;
+            Unidad:      Coalesce(e.UNIDAD; "");
+            Sistema:     Coalesce(e.EXISTENCIA; 0);
+            Fisica:      Coalesce(e.EXISTENCIA; 0);
+            Contado:     false
+        }
+    )
+);;
+
+/* recuperar el borrador mas reciente de esta bodega */
+Set(
+    varFolioBorr;
+    First(
+        Sort(
+            Filter(INV_Conteos; BODEGA = varBodConteo; ESTADO.Value = "BORRADOR");
+            FECHA_CONTEO;
+            SortOrder.Descending
+        )
+    ).FOLIO
+);;
+If(
+    !IsBlank(varFolioBorr);
+    Set(varFolioCnt; varFolioBorr);;
+    ForAll(
+        Filter(INV_Conteos; FOLIO = varFolioBorr; ESTADO.Value = "BORRADOR") As r;
+        UpdateIf(colCnt; Clave = r.CLAVE; {Fisica: r.EXIST_FISICA; Contado: true})
+    );;
+    Notify("Se recupero el borrador " & varFolioBorr & ". Puede seguir contando."; NotificationType.Information)
+)
+--------------------------------------------------------------------------------
+
+
+5.3 btnRouter  (REEMPLAZAR OnSelect)
+------------------------------------
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Set(varPopup; "");;
+If(scrPrincipal.Width < nfCorteMovil; Set(varNavAbierto; false));;
+
+/* ---------- BODEGAS: Clear primero, para que nunca se acumulen ---------- */
+Clear(colMisBod);;
+Collect(colMisBod; ForAll(nfMisBodegas As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN}));;
+Collect(colMisBod; {B: "TODAS"; N: "Todas las bodegas"; C: "TODAS"; O: 99});;
+Clear(colAdminBod);;
+Collect(colAdminBod; ForAll(nfBodegasAdmin As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN}));;
+Clear(colCodBod);;
+Collect(colCodBod; ForAll(nfBodegasCodigo As b; {B: b.Title; N: b.NOMBRE; C: b.CORTO; O: b.ORDEN}));;
+
+/* ---------- SALIDAS: siempre arranca en Bodega General ---------- */
+If(varPantalla = "SAL";
+    Set(varModoSal;  "UNIDAD");;
+    Set(varBodega;   nfBodegaDefault);;
+    Set(varBuscar;   "");;
+    Reset(txtBuscar);;
+    Set(varAreaUso;  "");;
+    Set(varProyecto; LookUp(INV_Proyectos; false));;
+    Clear(colCatSel);;
+    Clear(colSel);;
+    Clear(colErroresStock)
+);;
+
+/* ---------- CONFIRMAR ENTREGA: arranca en el dia de hoy ---------- */
+If(varPantalla = "ENT";
+    Set(varEntDesde;  Today());;
+    Set(varEntHasta;  Today());;
+    Set(varBuscarEnt; "");;
+    Reset(txtBuscarEnt);;
+    Refresh(SALIDAS);;
+    ClearCollect(
+        colEntrega;
+        ForAll(
+            Filter(SALIDAS; ESTADO.Value = "PENDIENTE"; CONFIRMA = true) As s;
+            {
+                IdSal:       s.ID;
+                NoSalida:    s.NO_SALIDA;
+                Clave:       s.CODIGO & "|" & s.BODEGA &
+                             If(IsBlank(s.PROYECTO_CODIGO); ""; "|" & s.PROYECTO_CODIGO);
+                Codigo:      s.CODIGO;
+                Descripcion: s.DESCRIPCION;
+                Categoria:   s.CATEGORIA;
+                Unidad:      s.'UNIDAD MEDIDA';
+                Bodega:      s.BODEGA;
+                AreaUso:     s.'AREA USO';
+                Responsable: s.RESPONSABLE;
+                Fecha:       s.FECHA;
+                Dia:         Date(Year(s.FECHA); Month(s.FECHA); Day(s.FECHA));
+                Solicitada:  s.SALIDA;
+                Entregar:    s.SALIDA;
+                Marcado:     false;
+                Motivo:      "";
+                Busca:       Lower(
+                                 s.CODIGO & " " & s.DESCRIPCION & " " & s.RESPONSABLE & " " &
+                                 s.'AREA USO' & " " & s.NO_SALIDA & " " & Coalesce(s.EPP; "") & " " &
+                                 Coalesce(s.PROYECTO_CODIGO; "")
+                             )
+            }
+        )
+    )
+);;
+
+/* ---------- INGRESOS ---------- */
+If(varPantalla = "ING";
+    Set(varBodIng;     nfBodegaAdminDef);;
+    Set(varProveedor;  LookUp(TRZ_Proveedores; false));;
+    Set(varProvNuevo;  "");;
+    Set(varProvTel;    "");;
+    Set(varFactura;    "");;
+    Reset(txtIngFactura);;
+    Set(varProyIng;    LookUp(INV_Proyectos; false));;
+    Set(varEsProyecto; false);;
+    Reset(tglEsProyecto);;
+    Set(varBuscarIng;  "");;
+    Reset(txtBuscarIng);;
+    Clear(colIng);;
+    Refresh(PRODUCTOS)
+);;
+
+/* ---------- CATALOGO: siempre arranca en Bodega General y habilitados ---------- */
+If(varPantalla = "CAT";
+    Set(varBodCat;    nfBodegaDefault);;
+    Set(varBuscarCat; "");;
+    Reset(txtCatBuscar);;
+    Set(varSoloMin;   false);;
+    Set(varVerEstado; "HAB");;
+    Clear(colCatSel)
+);;
+
+/* ---------- CREAR CODIGOS ---------- */
+If(varPantalla = "COD";
+    Clear(colNuevos);;
+    Refresh(PRODUCTOS)
+);;
+
+/* ---------- CATALOGO DE PRODUCTOS (para buscar en Ingresos y en Crear codigos) ---------- */
+If(varPantalla in ["ING"; "COD"];
+    ClearCollect(
+        colProductos;
+        ForAll(
+            PRODUCTOS As p;
+            {
+                Codigo:      p.CODIGO;
+                Descripcion: p.DESCRIPCION;
+                Categoria:   p.CATEGORIA;
+                Unidad:      Coalesce(p.'UNIDAD MEDIDA'; "");
+                ReqPersona:  Coalesce(p.REQUIERE_PERSONA; false);
+                Ingrediente: Coalesce(p.INGREDIENTE; "");
+                Activo:      Coalesce(p.ACTIVO; true);
+                Busca:       Lower(p.CODIGO & " " & p.DESCRIPCION & " " & p.CATEGORIA & " " &
+                                   Coalesce(p.'UNIDAD MEDIDA'; "") & " " & Coalesce(p.INGREDIENTE; ""))
+            }
+        )
+    );;
+    ClearCollect(
+        colCategorias;
+        Sort(Distinct(Filter(colProductos; !IsBlank(Categoria)); Categoria); Value; SortOrder.Ascending)
+    )
+);;
+
+/* ---------- REPORTES ---------- */
+If(varPantalla = "REP";
+    Set(varBodRep;  nfBodegaAdminDef);;
+    Set(varMesIni;  Month(Now()));;
+    Set(varMesFin;  Month(Now()));;
+    Set(varAnioRep; Year(Now()));;
+    Clear(colRep)
+);;
+
+/* ---------- BAJAS ---------- */
+If(varPantalla = "BAJA";
+    ClearCollect(colBajas; Sort(Filter(INV_Bajas; REACTIVADO = false); FECHA_BAJA; SortOrder.Descending))
+);;
+
+/* ---------- ACCESOS ---------- */
+If(varPantalla = "ACC";
+    Set(varAccEdit; Blank());;
+    Clear(colAccExtra);;
+    Clear(colAccQuitar);;
+    ClearCollect(
+        colAccesos;
+        ForAll(
+            INV_Acceso As a;
+            {
+                Id:     a.ID;
+                Correo: a.Title;
+                Nombre: Coalesce(a.NOMBRE; "");
+                Rol:    Coalesce(a.ROL.Value; "");
+                Area:   Coalesce(a.AREA; "");
+                RutaBG: Coalesce(a.RUTA_BG; false);
+                Activo: Coalesce(a.ACTIVO; false);
+                Extra:  Coalesce(a.PERMISOS_EXTRA; "");
+                Quitar: Coalesce(a.PERMISOS_QUITAR; "")
+            }
+        )
+    )
+);;
+
+/* ---------- CARGA DE ARTICULOS (al final, despues de fijar la bodega) ---------- */
+If(varPantalla in ["SAL"; "CAT"; "ING"];
+    Set(varProyStock; "");;
+    Set(varBodStock; Switch(varPantalla; "SAL"; varBodega; "CAT"; varBodCat; varBodIng));;
+    Refresh(INV_Existencias);;
+    Select(btnCargarStock)
+);;
+If(varPantalla = "CONT";
+    Set(varBodConteo; nfBodegaAdminDef);;
+    Set(varFolioAut;  "");;
+    Select(btnCargarConteo)
+)
+--------------------------------------------------------------------------------
+NOTA: Reset(txtBuscarEnt) da error hasta que crees ese control (Parte 7).
+Si quieres pegar el router antes, quita esa linea y la vuelves a poner despues.
+
+
+################################################################################
+PARTE 6 - SALIDAS
+################################################################################
+
+6.1 COMO SE HACE UNA SALIDA (para el usuario)
+---------------------------------------------
+  POR UNIDAD (material general)
+   1. Entra a Salidas. Ya esta seleccionada Bodega General.
+   2. Cambia de bodega si necesitas (chips arriba; en celular el boton "Bodega").
+   3. Escribe cualquier palabra: "codo 3", "pvc codo", "MATE12", "galon"...
+   4. Toca las tarjetas que vas a llevar. Ajusta cantidad con + / - o escribiendo.
+   5. Si el articulo es EPP aparece "Asignar persona": eliges de la lista o
+      escribes el nombre.
+   6. "Continuar" -> eliges el area de uso -> "Guardar salida".
+
+  POR PROYECTO (material apartado)
+   1. Boton "Por proyecto" -> toca el recuadro de proyecto y elige.
+   2. Solo aparece lo que se ingreso PARA ese proyecto, de cualquier bodega.
+   3. Marca, ajusta cantidades, Continuar, Guardar.
+
+  Despues de guardar, lo que se saco de Bodega General queda PENDIENTE hasta que
+  la encargada confirme la entrega. Lo de otras bodegas queda ENTREGADO directo.
+
+
+6.2 CONTROLES A MODIFICAR
+-------------------------
+
+CONTROL   : galItems
+TIPO      : Gallery (vertical)
+UBICACION : cntVSalidas
+PROPIEDAD Items:
+--------------------------------------------------------------------------------
+=With(
+    {
+        palabras: Filter(Split(Lower(Trim(varBuscar)); " ") As w; !IsBlank(w.Value))
+    };
+    Sort(
+        Filter(
+            colStock As s;
+            s.Habilitado = true;
+            If(
+                varModoSal = "PROYECTO";
+                s.Proyecto = Coalesce(varProyecto.Title; "@@");
+                s.Proyecto = "" && Or(IsEmpty(colCatSel); s.Categoria in colCatSel.Cat)
+            );
+            CountRows(Filter(palabras As w; !(w.Value in s.Busca))) = 0
+        );
+        Descripcion;
+        SortOrder.Ascending
+    )
+)
+--------------------------------------------------------------------------------
+Nota: como Items ya no sale de SharePoint, los controles internos siguen
+funcionando igual (ThisItem.Clave, Codigo, Descripcion, Categoria, Bodega,
+Unidad, Existencia, Minimo, Comprador, ReqPersona). btnSelItem, btnEPP, btnMas,
+btnMenos y txtCant ESTAN CORRECTOS, no se tocan.
+
+CONTROL   : lblTagBodega
+TIPO      : Label
+UBICACION : galItems > cntTarjeta > cntTags
+PROPIEDAD Text:
+=Coalesce(ThisItem.BodegaNom; ThisItem.Bodega) &
+ If(IsBlank(ThisItem.Proyecto); ""; "  ·  " & ThisItem.Proyecto)
+
+CONTROL   : btnSelTodoProy
+TIPO      : Classic/Button
+UBICACION : cntVSalidas > cntPanelProyecto > cntProySelTodo
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=ForAll(
+    Filter(galItems.AllItems; Existencia > 0) As g;
+    If(
+        IsBlank(LookUp(colSel; Clave = g.Clave; Clave));
+        Collect(
+            colSel;
+            {
+                Clave:        g.Clave;
+                Codigo:       g.Codigo;
+                Descripcion:  g.Descripcion;
+                Categoria:    g.Categoria;
+                Bodega:       g.Bodega;
+                Unidad:       g.Unidad;
+                Existencia:   g.Existencia;
+                Cantidad:     g.Existencia;
+                Minimo:       g.Minimo;
+                CorreoCompra: g.Comprador;
+                ReqPersona:   g.ReqPersona;
+                Persona:      "";
+                Proyecto:     Coalesce(varProyecto.Title; "");
+                ProyectoNom:  Coalesce(varProyecto.NOMBRE; "")
+            }
+        )
+    )
+)
+--------------------------------------------------------------------------------
+(En proyecto, "Seleccionar todo" propone llevar todo lo apartado; se ajusta
+en el carrito.)
+
+CONTROL   : btnModoProyecto
+TIPO      : Classic/Button
+UBICACION : cntVSalidas > cntModoSal
+PROPIEDAD OnSelect:
+=Set(varModoSal; "PROYECTO");;
+Clear(colSel);;
+Clear(colCatSel);;
+Set(varBuscar; "");;
+Reset(txtBuscar);;
+Set(varProyecto; LookUp(INV_Proyectos; false));;
+Clear(colStock);;
+Set(varBuscarPop; "");;
+Set(varPopup; "PROY")
+
+PROPIEDAD Visible:
+=CountRows(nfMisProyectos) > 0
+
+CONTROL   : btnModoUnidad
+TIPO      : Classic/Button
+UBICACION : cntVSalidas > cntModoSal
+PROPIEDAD OnSelect:
+=Set(varModoSal; "UNIDAD");;
+Clear(colSel);;
+Clear(colCatSel);;
+Set(varProyecto; LookUp(INV_Proyectos; false));;
+Set(varProyStock; "");;
+Set(varBodStock; varBodega);;
+Select(btnCargarStock)
+
+CONTROL   : btnBodegaF
+TIPO      : Classic/Button
+UBICACION : galBodegaF
+PROPIEDAD OnSelect:
+=Set(varBodega; ThisItem.B);;
+Set(varBuscar; "");;
+Reset(txtBuscar);;
+Clear(colCatSel);;
+Set(varProyStock; "");;
+Set(varBodStock; ThisItem.B);;
+Select(btnCargarStock)
+
+CONTROL   : galCatChips
+TIPO      : Gallery (horizontal)
+UBICACION : cntPanelUnidad > cntFiltros > cntCatFila
+PROPIEDAD Items:
+=Sort(
+    Distinct(Filter(colStock; Habilitado = true; Proyecto = ""); Categoria);
+    Value;
+    SortOrder.Ascending
+)
+
+CONTROL   : txtBuscar
+TIPO      : ModernTextInput
+UBICACION : cntPanelUnidad > cntFiltros
+PROPIEDAD Placeholder:
+="Buscar: codigo, nombre, unidad, estante... (varias palabras)"
+(OnChange esta correcto.)
+
+CONTROL   : lblAvisoTodas
+TIPO      : Label
+UBICACION : cntPanelUnidad
+ACCION    : ELIMINAR. Ya no hace falta escribir 2 letras con "Todas las bodegas".
+
+CONTROL NUEVO : txtBuscarProy
+TIPO          : ModernTextInput
+UBICACION     : cntVSalidas > cntPanelProyecto, DEBAJO de cntProyPicker
+   Placeholder : ="Buscar dentro del proyecto"
+   OnChange    : =Set(varBuscar; Self.Text)
+   Height      : =38
+   AlignInContainer : =AlignInContainer.Stretch
+   (galItems ya usa varBuscar en los dos modos)
+
+CONTROL   : Label1, Label2
+UBICACION : cntVSalidas
+ACCION    : Si son etiquetas de prueba, ELIMINAR.
+
+
+6.3 GUARDAR SALIDA
+------------------
+CONTROL   : btnPopGuardar
+TIPO      : Classic/Button
+UBICACION : cntPopCarrito > cntPopPie > Container4
+CAMBIOS   : (1) lee la existencia por Clave (incluye proyecto)
+            (2) al terminar recarga colStock para que la pantalla quede al dia
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Set(varGuardando; true);;
+Refresh(INV_Existencias);;
+Clear(colErroresStock);;
+Clear(colBajoMinimo);;
+Set(varNoSalida; "SAL-" & Text(Now(); "yyyymmddhhmmss"));;
+
+ForAll(
+    colSel As s;
+    With(
+        {
+            ex:  LookUp(INV_Existencias; Title = s.Clave);
+            bod: LookUp(nfBodegasAll; Title = s.Bodega)
+        };
+        If(
+            Coalesce(ex.EXISTENCIA; 0) >= s.Cantidad && s.Cantidad > 0 && Coalesce(ex.ACTIVO; false);
+
+            Patch(
+                SALIDAS;
+                Defaults(SALIDAS);
+                {
+                    CODIGO:          s.Codigo;
+                    DESCRIPCION:     s.Descripcion;
+                    CATEGORIA:       s.Categoria;
+                    SALIDA:          s.Cantidad;
+                    'UNIDAD MEDIDA': s.Unidad;
+                    'AREA USO':      varAreaUso;
+                    BODEGA:          s.Bodega;
+                    NO_SALIDA:       varNoSalida;
+                    FECHA:           Now();
+                    RESPONSABLE:     nfUser.Nombre;
+                    CORREO_SOLICITA: nfUser.Correo;
+                    TIPODATA:        "SALIDA";
+                    EPP:             s.Persona;
+                    PROYECTO_CODIGO: s.Proyecto;
+                    PROYECTO_NOMBRE: s.ProyectoNom;
+                    CONFIRMA:        Coalesce(bod.CONFIRMA_ENTREGA; false);
+                    ESTADO:          {Value: If(Coalesce(bod.CONFIRMA_ENTREGA; false); "PENDIENTE"; "ENTREGADO")};
+                    ENTREGADO:       If(Coalesce(bod.CONFIRMA_ENTREGA; false); Blank(); Now());
+                    CANT_ENTREGADA:  If(Coalesce(bod.CONFIRMA_ENTREGA; false); 0; s.Cantidad);
+                    CANT_DEVUELTA:   0;
+                    ProcesadoBodega: !nfRutaBG
+                }
+            );;
+
+            Patch(INV_Existencias; ex; {EXISTENCIA: ex.EXISTENCIA - s.Cantidad});;
+
+            With(
+                {nueva: ex.EXISTENCIA - s.Cantidad};
+                If(
+                    nueva <= Coalesce(ex.MINIMO; 0)
+                        && Coalesce(ex.MINIMO; 0) > 0
+                        && !IsBlank(Trim(Coalesce(ex.CorreoComprador; "")));
+                    Collect(
+                        colBajoMinimo;
+                        {
+                            _CODIGO:      s.Codigo;
+                            _DESCRIPCION: s.Descripcion;
+                            _CATEGORIA:   s.Categoria;
+                            _BODEGA:      Coalesce(bod.NOMBRE; s.Bodega);
+                            _EXISTENCIA:  nueva;
+                            _UMEDIDA:     s.Unidad;
+                            _MINIMO:      ex.MINIMO;
+                            _ESTADO:      If(nueva <= 0; "AGOTADO"; "COMPRAR");
+                            _CORREO:      Substitute(Trim(ex.CorreoComprador); ","; ";")
+                        }
+                    )
+                )
+            );
+
+            Collect(colErroresStock; s)
+        )
+    )
+);;
+
+/* ---- total consolidado en PRODUCTOS ---- */
+Refresh(INV_Existencias);;
+ForAll(
+    Distinct(colSel; Codigo) As c;
+    Patch(
+        PRODUCTOS;
+        LookUp(PRODUCTOS; CODIGO = c.Value);
+        {EXISTENCIA: Sum(Filter(INV_Existencias; CODIGO = c.Value); EXISTENCIA)}
+    )
+);;
+
+/* ---- alerta de compra por minimo ---- */
+If(
+    !IsEmpty(colBajoMinimo);
+    ForAll(
+        Distinct(colBajoMinimo; _CORREO) As Destinatario;
+        Office365Outlook.SendEmailV2(
+            Destinatario.Value;
+            "Alerta de stock: productos en el minimo establecido";
+            "<div style='font-family: Arial, sans-serif; font-size: 9pt;'>" &
+            "<p>Los siguientes productos llegaron a su minimo. Confirme que son los que tiene asignado comprar:</p>" &
+            "<table style='border-collapse: collapse; width: 100%; font-size: 9pt;'>" &
+            "<thead><tr>" &
+                "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>CODIGO</th>" &
+                "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>DESCRIPCION</th>" &
+                "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>CATEGORIA</th>" &
+                "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>BODEGA</th>" &
+                "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>EXISTENCIA</th>" &
+                "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>UNIDAD</th>" &
+                "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>MINIMO</th>" &
+                "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>ESTADO</th>" &
+            "</tr></thead><tbody>" &
+            Concat(
+                Filter(colBajoMinimo; _CORREO = Destinatario.Value);
+                "<tr>" &
+                "<td style='border:1px solid #ccc;padding:5px;text-align:center;'>" & _CODIGO & "</td>" &
+                "<td style='border:1px solid #ccc;padding:5px;'>" & _DESCRIPCION & "</td>" &
+                "<td style='border:1px solid #ccc;padding:5px;text-align:center;'>" & _CATEGORIA & "</td>" &
+                "<td style='border:1px solid #ccc;padding:5px;text-align:center;'>" & _BODEGA & "</td>" &
+                "<td style='border:1px solid #ccc;padding:5px;text-align:center;'>" & _EXISTENCIA & "</td>" &
+                "<td style='border:1px solid #ccc;padding:5px;text-align:center;'>" & _UMEDIDA & "</td>" &
+                "<td style='border:1px solid #ccc;padding:5px;text-align:center;'>" & _MINIMO & "</td>" &
+                "<td style='border:1px solid #ccc;padding:5px;text-align:center;color:" &
+                    If(_ESTADO = "AGOTADO"; "#A62B2B"; "#9A6207") & ";'><b>" & _ESTADO & "</b></td>" &
+                "</tr>"
+            ) &
+            "</tbody></table>" &
+            "<p>Mensaje automatico del sistema de inventario. Generado por " & nfUser.Nombre & ".</p></div>";
+            {IsHtml: true}
+        )
+    )
+);;
+
+/* ---- cierre ---- */
+If(
+    !IsEmpty(colErroresStock);
+
+    ClearCollect(
+        colSel;
+        ForAll(
+            colErroresStock As er;
+            {
+                Clave:        er.Clave;
+                Codigo:       er.Codigo;
+                Descripcion:  er.Descripcion;
+                Categoria:    er.Categoria;
+                Bodega:       er.Bodega;
+                Unidad:       er.Unidad;
+                Existencia:   Coalesce(LookUp(INV_Existencias; Title = er.Clave; EXISTENCIA); 0);
+                Cantidad:     er.Cantidad;
+                Minimo:       er.Minimo;
+                CorreoCompra: er.CorreoCompra;
+                ReqPersona:   er.ReqPersona;
+                Persona:      er.Persona;
+                Proyecto:     er.Proyecto;
+                ProyectoNom:  er.ProyectoNom
+            }
+        )
+    );;
+    Notify(
+        "Se guardaron los disponibles. " & CountRows(colErroresStock) &
+        " renglon(es) ya no tenian existencia suficiente. Revise las cantidades.";
+        NotificationType.Warning;
+        5000
+    );;
+    Set(varGuardando; false);
+
+    Clear(colSel);;
+    Reset(txtObs);;
+    Set(varAreaUso; "");;
+    Set(varPopup; "");;
+    Set(varGuardando; false);;
+    Notify(varNoSalida & " guardada correctamente."; NotificationType.Success; 3000)
+);;
+Select(btnCargarStock)
+--------------------------------------------------------------------------------
+Los demas controles del carrito (galPopLineas, txtPopCant, btnPopMas,
+btnPopMenos, cmbAreaUso, icoPopQuitar) ESTAN CORRECTOS.
+
+
+################################################################################
+PARTE 7 - POPUP DE LISTAS (cntPopLista)
+################################################################################
+
+CONTROL   : galPopLista
+TIPO      : Gallery
+UBICACION : cntPopLista
+PROPIEDAD Items:
+--------------------------------------------------------------------------------
+=With(
+    {
+        palabras: Filter(Split(Lower(Trim(varBuscarPop)); " ") As w; !IsBlank(w.Value))
+    };
+    Switch(
+        varPopup;
+
+        "BODEGA";
+        ForAll(
+            Sort(colMisBod; O; SortOrder.Ascending) As b;
+            {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: b.B = varBodega}
+        );
+
+        "BODCAT";
+        ForAll(
+            Sort(colMisBod; O; SortOrder.Ascending) As b;
+            {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: b.B = varBodCat}
+        );
+
+        "BODING";
+        ForAll(
+            Sort(colAdminBod; O; SortOrder.Ascending) As b;
+            {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: b.B = varBodIng}
+        );
+
+        "BODCNT";
+        ForAll(
+            Sort(colAdminBod; O; SortOrder.Ascending) As b;
+            {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: b.B = varBodConteo}
+        );
+
+        "BODREP";
+        ForAll(
+            Sort(colAdminBod; O; SortOrder.Ascending) As b;
+            {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: b.B = varBodRep}
+        );
+
+        "CODBOD";
+        ForAll(
+            Sort(colCodBod; O; SortOrder.Ascending) As b;
+            {Cod: b.B; Etq: b.N; Det: "Codigo " & b.C; Marcado: false}
+        );
+
+        "CAT";
+        ForAll(
+            Sort(
+                Distinct(
+                    If(
+                        varPantalla = "CONT";
+                        ForAll(colCnt As c; {Categoria: c.Categoria});
+                        ForAll(Filter(colStock; Habilitado = true) As c; {Categoria: c.Categoria})
+                    );
+                    Categoria
+                );
+                Value;
+                SortOrder.Ascending
+            ) As c;
+            {Cod: c.Value; Etq: c.Value; Det: ""; Marcado: c.Value in colCatSel.Cat}
+        );
+
+        "PROY";
+        ForAll(
+            Filter(
+                nfMisProyectos As p;
+                CountRows(Filter(palabras As w; !(w.Value in Lower(p.Title & " " & p.NOMBRE & " " & p.AREA)))) = 0
+            ) As p;
+            {
+                Cod:     p.Title;
+                Etq:     p.Title & "  ·  " & p.NOMBRE;
+                Det:     p.AREA & "   ·   desde " & Text(p.FECHA_INICIO; "dd/mm/yyyy");
+                Marcado: false
+            }
+        );
+
+        "PROYING";
+        ForAll(
+            Filter(
+                nfMisProyectos As p;
+                CountRows(Filter(palabras As w; !(w.Value in Lower(p.Title & " " & p.NOMBRE & " " & p.AREA)))) = 0
+            ) As p;
+            {
+                Cod:     p.Title;
+                Etq:     p.Title & "  ·  " & p.NOMBRE;
+                Det:     p.AREA & "   ·   desde " & Text(p.FECHA_INICIO; "dd/mm/yyyy");
+                Marcado: false
+            }
+        );
+
+        "PERSONA";
+        ForAll(
+            FirstN(
+                Filter(
+                    nfPersonal As q;
+                    CountRows(Filter(palabras As w; !(w.Value in Lower(q.Nombre & " " & q.Depto)))) = 0
+                );
+                60
+            ) As q;
+            {Cod: q.Nombre; Etq: q.Nombre; Det: q.Depto & "   ·   " & q.Codigo; Marcado: false}
+        );
+
+        "PROV";
+        ForAll(
+            FirstN(
+                Filter(
+                    nfProveedores As v;
+                    CountRows(Filter(palabras As w; !(w.Value in Lower(v.Title & " " & Coalesce(v.Nit; "") & " " & Coalesce(v.Contacto; ""))))) = 0
+                );
+                60
+            ) As v;
+            {Cod: v.Title; Etq: v.Title; Det: "NIT " & Coalesce(v.Nit; "-") & "   ·   " & Coalesce(v.Telefono; "sin telefono"); Marcado: false}
+        );
+
+        ForAll(
+            Filter(colMisBod; false) As z;
+            {Cod: ""; Etq: ""; Det: ""; Marcado: false}
+        )
+    )
+)
+--------------------------------------------------------------------------------
+
+NOTA: nfPersonal (Parte 3) ya trae la lista completa con los campos Nombre,
+Depto y Codigo, por eso aqui se usan q.Depto y q.Codigo.
+
+NOTA TRZ_Proveedores: si al pegar nfProveedores te marca error en
+"Activo = true", la columna Activo es de texto. Cambia esa linea por:
+        Activo = "SI"
+o por  Activo.Value = "SI"  si es de opcion.
+
+
+CONTROL   : btnPopSel
+TIPO      : Classic/Button
+UBICACION : galPopLista
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Switch(
+    varPopup;
+
+    "BODEGA";
+    Set(varBodega; ThisItem.Cod);;
+    Clear(colCatSel);;
+    Set(varBuscar; "");;
+    Reset(txtBuscar);;
+    Set(varPopup; "");;
+    Set(varProyStock; "");;
+    Set(varBodStock; ThisItem.Cod);;
+    Select(btnCargarStock);
+
+    "BODCAT";
+    Set(varBodCat; ThisItem.Cod);;
+    Clear(colCatSel);;
+    Set(varPopup; "");;
+    Set(varProyStock; "");;
+    Set(varBodStock; ThisItem.Cod);;
+    Select(btnCargarStock);
+
+    "BODING";
+    Set(varBodIng; ThisItem.Cod);;
+    Clear(colIng);;
+    Set(varPopup; "");;
+    Set(varProyStock; "");;
+    Set(varBodStock; ThisItem.Cod);;
+    Select(btnCargarStock);
+
+    "BODCNT";
+    Set(varBodConteo; ThisItem.Cod);;
+    Set(varPopup; "");;
+    Select(btnCargarConteo);
+
+    "BODREP";
+    Set(varBodRep; ThisItem.Cod);;
+    Clear(colRep);;
+    Set(varPopup; "");
+
+    "CODBOD";
+    UpdateIf(colNuevos; Fila = varFilaCod; {Bodega: ThisItem.Cod});;
+    Set(varPopup; "");
+
+    "CAT";
+    If(
+        ThisItem.Cod in colCatSel.Cat;
+        RemoveIf(colCatSel; Cat = ThisItem.Cod);
+        Collect(colCatSel; {Cat: ThisItem.Cod})
+    );
+
+    "PROY";
+    Set(varProyecto; LookUp(INV_Proyectos; Title = ThisItem.Cod));;
+    Clear(colSel);;
+    Set(varBuscar; "");;
+    Reset(txtBuscarProy);;
+    Set(varPopup; "");;
+    Set(varProyStock; ThisItem.Cod);;
+    Select(btnCargarStock);
+
+    "PROYING";
+    Set(varProyIng; LookUp(INV_Proyectos; Title = ThisItem.Cod));;
+    Set(varPopup; "");
+
+    "PERSONA";
+    UpdateIf(colSel; Clave = varLineaEPP; {Persona: ThisItem.Cod});;
+    Set(varPopup; "");
+
+    "PROV";
+    Set(varProveedor; LookUp(TRZ_Proveedores; Title = ThisItem.Cod));;
+    Set(varProvNuevo; "");;
+    Set(varPopup; "")
+)
+--------------------------------------------------------------------------------
+
+CONTROL   : btnPopCrear
+TIPO      : Classic/Button
+UBICACION : cntPopLista
+CAMBIO    : en PERSONA ya no crea la persona en el catalogo; usa el nombre
+            escrito (escribir O seleccionar).
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=If(
+    varPopup = "PERSONA";
+
+    UpdateIf(colSel; Clave = varLineaEPP; {Persona: Upper(Trim(varBuscarPop))});;
+    Set(varBuscarPop; "");;
+    Reset(txtBuscarPop);;
+    Set(varPopup; "");
+
+    If(
+        !IsBlank(LookUp(nfProveedores; Lower(Title) = Lower(Trim(varBuscarPop))));
+        Notify("Ese proveedor ya existe, seleccionelo de la lista."; NotificationType.Warning);
+
+        Set(
+            varProveedor;
+            Patch(
+                TRZ_Proveedores;
+                Defaults(TRZ_Proveedores);
+                {Title: Upper(Trim(varBuscarPop)); Telefono: ""; Activo: true}
+            )
+        );;
+        Set(varProvNuevo; "");;
+        Notify("Proveedor creado."; NotificationType.Success);;
+        Set(varBuscarPop; "");;
+        Reset(txtBuscarPop);;
+        Set(varPopup; "")
+    )
+)
+--------------------------------------------------------------------------------
+PROPIEDAD Text:
+=If(varPopup = "PERSONA"; "Usar este nombre: "; "Crear proveedor: ") & Upper(Trim(varBuscarPop))
+
+PROPIEDAD Visible:
+=varPopup in ["PERSONA"; "PROV"] && Len(Trim(varBuscarPop)) >= 3
+
+CONTROL   : txtBuscarPop
+TIPO      : ModernTextInput
+UBICACION : cntPopLista
+PROPIEDAD Placeholder:
+=Switch(
+    varPopup;
+    "PERSONA"; "Busque o escriba el nombre completo";
+    "PROV";    "Buscar proveedor por nombre o NIT";
+    "Buscar"
+)
+
+CONTROL   : lblPopListaTit
+TIPO      : Label
+UBICACION : cntPopLista
+PROPIEDAD Text:
+=Switch(
+    varPopup;
+    "BODEGA";  "Seleccione la bodega";
+    "BODING";  "Bodega que recibe el ingreso";
+    "BODCAT";  "Bodega a consultar";
+    "BODCNT";  "Bodega a contar";
+    "BODREP";  "Bodega del reporte";
+    "CODBOD";  "Bodega del codigo nuevo";
+    "CAT";     "Filtrar por categoria";
+    "PROY";    "Seleccione el proyecto";
+    "PROYING"; "Proyecto del ingreso";
+    "PERSONA"; "Quien va a usar el equipo";
+    "PROV";    "Seleccione el proveedor";
+    ""
+)
+
+CONTROL   : txtBuscarPop
+PROPIEDAD Visible:
+=varPopup in ["PERSONA"; "PROV"; "PROY"; "PROYING"]
+(sin cambio, solo confirmo que va asi)
+
+
+################################################################################
+PARTE 8 - CONFIRMAR ENTREGA
+################################################################################
+
+Al entrar muestra las pendientes de HOY. Con las flechas pasas de dia en dia,
+con los calendarios eliges un rango, y "Anteriores" te muestra todo lo que
+quedo pendiente de dias pasados. El buscador filtra por codigo, producto,
+solicitante, area, No. de salida o persona del EPP.
+
+8.1 CONTENEDOR NUEVO
+--------------------
+CONTROL NUEVO : cntEntFiltros
+TIPO          : GroupContainer, Diseño horizontal (AutoLayout)
+UBICACION     : cntVEntrega, ENTRE cntEntHeader y cntEntAcciones
+   LayoutDirection      : =LayoutDirection.Horizontal
+   LayoutWrap           : =true
+   LayoutGap            : =8
+   LayoutAlignItems     : =LayoutAlignItems.Center
+   Height               : =If(nfEsMovil; 150; 58)
+   FillPortions         : =0
+   PaddingLeft / Right  : =8
+   PaddingTop / Bottom  : =6
+   Fill                 : =ColorValue(nfCol.Surface)
+   RadiusTopLeft/...    : =nfRadio  (las cuatro esquinas)
+
+Hijos, EN ESTE ORDEN:
+
+  CONTROL NUEVO : txtBuscarEnt
+  TIPO          : ModernTextInput
+     Placeholder : ="Buscar codigo, producto o solicitante"
+     OnChange    : =Set(varBuscarEnt; Self.Text)
+     TriggerOutput : =TriggerOutput.Delayed
+     Width       : =If(nfEsMovil; Parent.Width - 16; 300)
+     Height      : =38
+
+  CONTROL NUEVO : icoEntPrev
+  TIPO          : ModernIcon (o Classic/Icon)
+     Icon        : ="ChevronLeft"        (clasico: =Icon.ChevronLeft)
+     Width/Height: =34
+     OnSelect    :
+=Set(varEntDesde; DateAdd(varEntDesde; -1; TimeUnit.Days));;
+Set(varEntHasta; DateAdd(varEntHasta; -1; TimeUnit.Days))
+
+  CONTROL NUEVO : dpEntDesde
+  TIPO          : Classic/DatePicker
+     DefaultDate : =varEntDesde
+     Format      : ="dd/mm/yyyy"
+     InputTextPlaceholder : ="Desde"
+     Width       : =140
+     Height      : =38
+     OnChange    :
+=Set(varEntDesde; Self.SelectedDate);;
+If(varEntHasta < varEntDesde; Set(varEntHasta; varEntDesde))
+
+  CONTROL NUEVO : dpEntHasta
+  TIPO          : Classic/DatePicker
+     DefaultDate : =varEntHasta
+     Format      : ="dd/mm/yyyy"
+     InputTextPlaceholder : ="Hasta"
+     Width       : =140
+     Height      : =38
+     OnChange    :
+=Set(varEntHasta; Self.SelectedDate);;
+If(varEntDesde > varEntHasta; Set(varEntDesde; varEntHasta))
+
+  CONTROL NUEVO : icoEntNext
+  TIPO          : ModernIcon (o Classic/Icon)
+     Icon        : ="ChevronRight"       (clasico: =Icon.ChevronRight)
+     Width/Height: =34
+     DisplayMode : =If(varEntHasta >= Today(); DisplayMode.Disabled; DisplayMode.Edit)
+     OnSelect    :
+=Set(varEntDesde; DateAdd(varEntDesde; 1; TimeUnit.Days));;
+Set(varEntHasta; DateAdd(varEntHasta; 1; TimeUnit.Days))
+
+  CONTROL NUEVO : btnEntHoy
+  TIPO          : Classic/Button
+     Text        : ="Hoy (" & CountRows(Filter(colEntrega; Dia = Today())) & ")"
+     Width       : =96
+     Height      : =34
+     Fill        : =If(And(varEntDesde = Today(); varEntHasta = Today()); ColorValue(nfCol.Accent); ColorValue(nfCol.Surface2))
+     Color       : =If(And(varEntDesde = Today(); varEntHasta = Today()); Color.White; ColorValue(nfCol.Ink))
+     OnSelect    :
+=Set(varEntDesde; Today());;
+Set(varEntHasta; Today())
+
+  CONTROL NUEVO : btnEntAnteriores
+  TIPO          : Classic/Button
+     Text        : ="Anteriores (" & CountRows(Filter(colEntrega; Dia < Today())) & ")"
+     Width       : =130
+     Height      : =34
+     Fill        : =If(CountRows(Filter(colEntrega; Dia < Today())) > 0; ColorValue(nfCol.AmberSoft); ColorValue(nfCol.Surface2))
+     Color       : =If(CountRows(Filter(colEntrega; Dia < Today())) > 0; ColorValue(nfCol.Amber); ColorValue(nfCol.Muted))
+     OnSelect    :
+=Set(varEntDesde; Coalesce(Min(colEntrega; Dia); Today()));;
+Set(varEntHasta; DateAdd(Today(); -1; TimeUnit.Days))
+
+
+8.2 CONTROLES A MODIFICAR
+-------------------------
+CONTROL   : lblEntTtl
+TIPO      : Label
+UBICACION : cntEntHeader > cntEntAuto
+PROPIEDAD Text:
+=CountRows(Filter(colEntrega; Dia = Today())) & " pendientes de entregar hoy   ·   " &
+ CountRows(Filter(colEntrega; Dia < Today())) & " pendientes anteriores"
+
+PROPIEDAD Color:
+=If(CountRows(Filter(colEntrega; Dia < Today())) > 0; ColorValue(nfCol.Amber); ColorValue(nfCol.Muted))
+
+CONTROL   : galEntrega
+TIPO      : Gallery
+UBICACION : cntVEntrega
+PROPIEDAD Items:
+=With(
+    {palabras: Filter(Split(Lower(Trim(varBuscarEnt)); " ") As w; !IsBlank(w.Value))};
+    Sort(
+        Filter(
+            colEntrega As e;
+            e.Dia >= varEntDesde && e.Dia <= varEntHasta;
+            CountRows(Filter(palabras As w; !(w.Value in e.Busca))) = 0
+        );
+        Fecha;
+        SortOrder.Ascending
+    )
+)
+
+CONTROL   : lblEntDatos
+TIPO      : Label
+UBICACION : galEntrega > cntEnt > cntEntPills
+PROPIEDAD Text:
+=ThisItem.NoSalida & "   ·   " & Text(ThisItem.Fecha; "dd/mm/yyyy hh:mm") &
+ "   ·   " & ThisItem.AreaUso & "   ·   " & ThisItem.Responsable &
+ If(ThisItem.Dia < Today(); "   ·   HACE " & DateDiff(ThisItem.Dia; Today(); TimeUnit.Days) & " DIA(S)"; "")
+
+CONTROL   : btnMarcarTodo
+TIPO      : Classic/Button
+UBICACION : cntEntAcciones
+PROPIEDAD OnSelect:   (solo marca lo que se esta viendo)
+=UpdateIf(colEntrega; IdSal in galEntrega.AllItems.IdSal; {Marcado: true})
+
+CONTROL   : btnDesmarcarTodo
+PROPIEDAD OnSelect:
+=UpdateIf(colEntrega; true; {Marcado: false})
+
+CONTROL   : lblEntContador
+PROPIEDAD Text:
+=CountRows(galEntrega.AllItems) & " en pantalla   ·   " &
+ CountRows(Filter(colEntrega; Marcado = true)) & " marcados"
+
+CONTROL   : txtEntregar, txtMotivoEnt, btnMarcarEnt, lblEntDif, lblEntSolic
+ESTADO    : CORRECTOS.
+
+CONTROL   : btnConfirmarEnt
+TIPO      : Classic/Button
+UBICACION : cntVEntrega > cntEntAccion
+CAMBIO    : devuelve a la fila correcta usando la Clave (respeta proyecto)
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Set(varGuardando; true);;
+Refresh(SALIDAS);;
+Refresh(INV_Existencias);;
+
+ForAll(
+    Filter(colEntrega; Marcado = true) As e;
+    With(
+        {
+            sal: LookUp(SALIDAS; ID = e.IdSal);
+            ex:  LookUp(INV_Existencias; Title = e.Clave);
+            dif: e.Solicitada - e.Entregar
+        };
+
+        Patch(
+            SALIDAS;
+            sal;
+            {
+                ESTADO: {
+                    Value: If(
+                        e.Entregar <= 0; "DEVUELTO";
+                        dif > 0;         "DEVUELTO PARCIAL";
+                        "ENTREGADO"
+                    )
+                };
+                ENTREGADO:      Now();
+                CANT_ENTREGADA: e.Entregar;
+                CANT_DEVUELTA:  dif;
+                MOTIVO_AJUSTE:  e.Motivo;
+                AJUSTADO_POR:   nfPersonaUser;
+                FECHA_AJUSTE:   Now()
+            }
+        );;
+
+        If(
+            dif > 0 && !IsBlank(ex);
+            Patch(INV_Existencias; ex; {EXISTENCIA: Coalesce(ex.EXISTENCIA; 0) + dif});;
+            Patch(
+                INGRESOS;
+                Defaults(INGRESOS);
+                {
+                    CODIGO:          e.Codigo;
+                    FECHA:           Now();
+                    DESCRIPCION:     e.Descripcion;
+                    CATEGORIA:       e.Categoria;
+                    CANTIDAD:        dif;
+                    'UNIDAD MEDIDA': e.Unidad;
+                    BODEGA:          e.Bodega;
+                    COSTOUNITARIO:   Coalesce(ex.COSTO_ULT; 0);
+                    COSTOTOTAL:      Coalesce(ex.COSTO_ULT; 0) * dif;
+                    FACTURA:         "DEV-" & e.NoSalida;
+                    PROVEEDOR:       "DEVOLUCION INTERNA";
+                    RESPONSABLE:     nfUser.Nombre;
+                    TIPODATA:        "INGRESO";
+                    TIPO_INGRESO:    {Value: "DEVOLUCION"};
+                    ID_ORIGEN:       e.IdSal;
+                    PROYECTO_CODIGO: Coalesce(ex.PROYECTO; "")
+                }
+            )
+        )
+    )
+);;
+
+Refresh(INV_Existencias);;
+ForAll(
+    Distinct(Filter(colEntrega; Marcado = true); Codigo) As c;
+    Patch(
+        PRODUCTOS;
+        LookUp(PRODUCTOS; CODIGO = c.Value);
+        {EXISTENCIA: Sum(Filter(INV_Existencias; CODIGO = c.Value); EXISTENCIA)}
+    )
+);;
+
+Notify(
+    CountRows(Filter(colEntrega; Marcado = true)) & " renglon(es) procesados.";
+    NotificationType.Success
+);;
+Set(varGuardando; false);;
+Select(btnRouter)
+--------------------------------------------------------------------------------
+NOTA: btnRouter vuelve a poner la fecha en HOY. Si prefieres que se quede en el
+rango que tenias, cambia la ultima linea por:
+RemoveIf(colEntrega; Marcado = true)
+
+
+################################################################################
+PARTE 9 - INGRESOS (con el lote en un popup)
+################################################################################
+
+9.1 COMO QUEDA LA PANTALLA
+--------------------------
+  Arriba (cntIngCabecera, cntIngProy): bodega, proveedor, factura, proyecto.
+  En medio: buscador + tarjetas de productos (galBuscaProd).
+  Abajo: boton "Revisar ingreso (n)" que abre el popup con el lote
+         (cantidades, costo, lote, vencimiento, total y Guardar).
+
+9.2 POPUP NUEVO DEL INGRESO
+---------------------------
+CONTROL NUEVO : recScrimIng
+TIPO          : Rectangle
+UBICACION     : hijo directo de scrPrincipal (ver orden en la Parte 5)
+   X / Y      : =0
+   Width      : =Parent.Width
+   Height     : =Parent.Height
+   Fill       : =RGBA(10; 20; 35; 0,45)
+   Visible    : =varPopup = "INGRESO"
+   OnSelect   : =Set(varPopup; "")
+
+CONTROL NUEVO : cntPopIng
+TIPO          : GroupContainer, Diseño vertical (AutoLayout)
+UBICACION     : hijo directo de scrPrincipal, ARRIBA de recScrimIng
+   Width      : =If(nfEsMovil; Parent.Width - 16; Min(860; Parent.Width - 80))
+   Height     : =If(nfEsMovil; Parent.Height - 40; Min(640; Parent.Height - 60))
+   X          : =(Parent.Width - Self.Width) / 2
+   Y          : =(Parent.Height - Self.Height) / 2
+   Fill       : =ColorValue(nfCol.Surface)
+   Radius (4) : =nfRadio
+   DropShadow : =DropShadow.Bold
+   LayoutDirection  : =LayoutDirection.Vertical
+   LayoutGap        : =8
+   LayoutAlignItems : =LayoutAlignItems.Stretch
+   Padding (4)      : =12
+   Visible    : =varPopup = "INGRESO"
+
+Hijos de cntPopIng, EN ESTE ORDEN:
+
+  CONTROL NUEVO : cntPopIngTit   (GroupContainer horizontal, Height =40, FillPortions =0)
+     Hijos:
+       lblPopIngTit (Label)
+          Text   : ="Ingreso a " & Coalesce(LookUp(colAdminBod; B = varBodIng).N; varBodIng) &
+                    "   ·   " & Coalesce(varProveedor.Title; varProvNuevo; "sin proveedor") &
+                    If(IsBlank(varFactura); ""; "   ·   Fact. " & varFactura) &
+                    If(varEsProyecto && !IsBlank(varProyIng); "   ·   " & varProyIng.Title; "")
+          FontWeight : =FontWeight.Semibold
+          FillPortions: =1
+       icoPopIngX (ModernIcon)
+          Icon     : ="Dismiss"
+          Width/Height : =28
+          OnSelect : =Set(varPopup; "")
+
+  lblIngCarritoTtl   <- CORTAR de cntVIngresos y PEGAR aqui (formulas sin cambio)
+  galIngCarrito      <- CORTAR de cntVIngresos y PEGAR aqui
+                        FillPortions: =1      (que tome todo el alto libre)
+  cntIngPie          <- CORTAR de cntVIngresos y PEGAR aqui (con lblIngGranTotal
+                        y btnGuardarIngreso adentro)
+
+  (Cortar y pegar con Ctrl+X / Ctrl+V conserva los nombres y las formulas.)
+
+
+9.3 BOTON QUE ABRE EL POPUP
+---------------------------
+CONTROL NUEVO : btnVerIngreso
+TIPO          : Classic/Button
+UBICACION     : cntVIngresos, al FINAL (donde estaba cntIngPie)
+   Text       : ="Revisar ingreso  ·  " & CountRows(colIng) & " producto(s)  ·  Q " &
+                 Text(Sum(colIng; Cantidad * CostoUnit); "#,##0.00")
+   DisplayMode: =If(IsEmpty(colIng); DisplayMode.Disabled; DisplayMode.Edit)
+   Fill       : =ColorValue(nfCol.Accent)
+   Color      : =Color.White
+   Height     : =46
+   AlignInContainer : =AlignInContainer.Center
+   Width      : =Min(360; Parent.Width - 20)
+   OnSelect   : =Set(varPopup; "INGRESO")
+
+
+9.4 BUSCADOR Y TARJETAS
+-----------------------
+CONTROL   : txtBuscarIng
+TIPO      : ModernTextInput
+UBICACION : cntVIngresos
+PROPIEDAD Placeholder:
+="Buscar cualquier producto: codigo, nombre, categoria, unidad (vacio = lo de esta bodega)"
+(OnChange esta correcto.)
+
+CONTROL   : galBuscaProd
+TIPO      : Gallery
+UBICACION : cntVIngresos
+PROPIEDAD Items:
+--------------------------------------------------------------------------------
+=With(
+    {palabras: Filter(Split(Lower(Trim(varBuscarIng)); " ") As w; !IsBlank(w.Value))};
+    If(
+        IsEmpty(palabras);
+
+        /* sin busqueda: lo general de la bodega, habilitado */
+        Sort(
+            ForAll(
+                Filter(colStock; Habilitado = true; Proyecto = "") As s;
+                {
+                    Codigo:      s.Codigo;
+                    Descripcion: s.Descripcion;
+                    Categoria:   s.Categoria;
+                    Unidad:      s.Unidad;
+                    Existencia:  s.Existencia;
+                    ReqPersona:  s.ReqPersona;
+                    Ingrediente: s.Ingrediente;
+                    EnBodega:    true
+                }
+            );
+            Descripcion;
+            SortOrder.Ascending
+        );
+
+        /* con busqueda: todo el catalogo, menos lo deshabilitado en esta bodega */
+        FirstN(
+            ForAll(
+                Filter(
+                    colProductos As p;
+                    p.Activo = true;
+                    CountRows(Filter(palabras As w; !(w.Value in p.Busca))) = 0;
+                    Coalesce(LookUp(colStock; Codigo = p.Codigo && Proyecto = ""; Habilitado); true)
+                ) As p;
+                {
+                    Codigo:      p.Codigo;
+                    Descripcion: p.Descripcion;
+                    Categoria:   p.Categoria;
+                    Unidad:      p.Unidad;
+                    Existencia:  Coalesce(LookUp(colStock; Codigo = p.Codigo && Proyecto = ""; Existencia); 0);
+                    ReqPersona:  p.ReqPersona;
+                    Ingrediente: p.Ingrediente;
+                    EnBodega:    !IsBlank(LookUp(colStock; Codigo = p.Codigo; Codigo))
+                }
+            );
+            100
+        )
+    )
+)
+--------------------------------------------------------------------------------
+
+CONTROL   : lblStock_1
+TIPO      : Label
+UBICACION : galBuscaProd > cntTarjeta_1
+PROPIEDAD Text:
+=If(
+    ThisItem.EnBodega;
+    "Existencia: " & ThisItem.Existencia & " " & ThisItem.Unidad;
+    "Nuevo en esta bodega"
+)
+
+CONTROL   : btnAgregarAIng
+TIPO      : Classic/Button
+UBICACION : galBuscaProd
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=If(
+    !IsBlank(LookUp(colIng; Clave = ThisItem.Codigo & "|" & varBodIng; Clave));
+    RemoveIf(colIng; Clave = ThisItem.Codigo & "|" & varBodIng);
+    Collect(
+        colIng;
+        {
+            Clave:       ThisItem.Codigo & "|" & varBodIng;
+            Codigo:      ThisItem.Codigo;
+            Descripcion: ThisItem.Descripcion;
+            Categoria:   ThisItem.Categoria;
+            Unidad:      ThisItem.Unidad;
+            Existencia:  ThisItem.Existencia;
+            Cantidad:    0;
+            CostoUnit:   Coalesce(LookUp(colStock; Codigo = ThisItem.Codigo && Proyecto = ""; Costo); 0);
+            Bodega:      varBodIng;
+            Lote:        "";
+            Vence:       Blank();
+            ReqPersona:  ThisItem.ReqPersona;
+            Ingrediente: ThisItem.Ingrediente
+        }
+    )
+)
+--------------------------------------------------------------------------------
+(Sugiere el ultimo costo como costo unitario; se puede cambiar.)
+
+
+9.5 RENGLONES DEL LOTE (dentro de galIngCarrito)  - ARREGLO DE "SE BORRA"
+-------------------------------------------------------------------------
+POR QUE SE BORRABA: cada vez que escribes, OnChange actualiza colIng; la
+galeria se vuelve a dibujar y la caja toma su Default. Como Default estaba
+vacio, lo escrito desaparecia. Regla: TODA caja dentro de una galeria que
+actualiza su coleccion debe tener Default = ThisItem.<campo>.
+
+CONTROL   : galIngCarrito
+PROPIEDAD TemplateSize:
+=If(nfEsMovil; 210; 120)
+
+CONTROL   : txtIngCant
+TIPO      : Classic/TextInput
+UBICACION : galIngCarrito > cntIngFila > cntIngNumeros
+PROPIEDAD Default:
+=If(ThisItem.Cantidad = 0; ""; Text(ThisItem.Cantidad))
+PROPIEDAD HintText:
+="Cantidad"
+PROPIEDAD OnChange:
+=UpdateIf(colIng; Clave = ThisItem.Clave; {Cantidad: Max(0; Value(Self.Text))})
+
+CONTROL   : txtIngCosto
+TIPO      : Classic/TextInput
+UBICACION : galIngCarrito > cntIngFila > cntIngNumeros
+PROPIEDAD Default:
+=If(ThisItem.CostoUnit = 0; ""; Text(ThisItem.CostoUnit))
+PROPIEDAD HintText:
+="Costo unitario Q"
+PROPIEDAD OnChange:
+=UpdateIf(colIng; Clave = ThisItem.Clave; {CostoUnit: Max(0; Value(Self.Text))})
+
+CONTROL NUEVO : txtIngLote
+TIPO          : Classic/TextInput
+UBICACION     : galIngCarrito > cntIngFila > cntIngNumeros (despues de txtIngCosto)
+   Default    : =ThisItem.Lote
+   HintText   : ="Lote (opcional)"
+   Width      : =120
+   Height     : =36
+   OnChange   : =UpdateIf(colIng; Clave = ThisItem.Clave; {Lote: Upper(Trim(Self.Text))})
+
+CONTROL NUEVO : dpIngVence
+TIPO          : Classic/DatePicker
+UBICACION     : galIngCarrito > cntIngFila > cntIngNumeros (despues de txtIngLote)
+   DefaultDate          : =ThisItem.Vence
+   Format               : ="dd/mm/yyyy"
+   InputTextPlaceholder : ="Vence (opcional)"
+   Width      : =140
+   Height     : =36
+   OnChange   : =UpdateIf(colIng; Clave = ThisItem.Clave; {Vence: Self.SelectedDate})
+
+CONTROL NUEVO : icoIngVenceX
+TIPO          : Classic/Icon
+UBICACION     : galIngCarrito > cntIngFila > cntIngNumeros (despues de dpIngVence)
+   Icon       : =Icon.Cancel
+   Width/Height : =24
+   Visible    : =!IsBlank(ThisItem.Vence)
+   OnSelect   : =UpdateIf(colIng; Clave = ThisItem.Clave; {Vence: Blank()});; Reset(dpIngVence)
+
+CONTROL   : lblIngTotal, icoIngQuitar, lblIngCod, lblIngDesc, lblIngStock
+ESTADO    : CORRECTOS.
+
+
+9.6 GUARDAR INGRESO
+-------------------
+CONTROL   : btnGuardarIngreso
+TIPO      : Classic/Button
+UBICACION : cntPopIng > cntIngPie
+CAMBIOS   : (1) si es proyecto, guarda en la fila del proyecto (apartado)
+            (2) guarda lote y vencimiento
+            (3) cierra el popup y recarga
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Set(varGuardando; true);;
+Refresh(INV_Existencias);;
+
+If(
+    IsBlank(varProveedor) && !IsBlank(Trim(varProvNuevo));
+    Set(
+        varProveedor;
+        Patch(
+            TRZ_Proveedores;
+            Defaults(TRZ_Proveedores);
+            {Title: Upper(Trim(varProvNuevo)); Telefono: varProvTel; Activo: true}
+        )
+    )
+);;
+
+ForAll(
+    colIng As i;
+    With(
+        {
+            clave: i.Codigo & "|" & i.Bodega & If(varEsProyecto; "|" & varProyIng.Title; "");
+            proy:  If(varEsProyecto; varProyIng.Title; "")
+        };
+        With(
+            {ex: LookUp(INV_Existencias; Title = clave)};
+
+            Patch(
+                INGRESOS;
+                Defaults(INGRESOS);
+                {
+                    CODIGO:          i.Codigo;
+                    FECHA:           Now();
+                    DESCRIPCION:     i.Descripcion;
+                    CATEGORIA:       i.Categoria;
+                    CANTIDAD:        i.Cantidad;
+                    'UNIDAD MEDIDA': i.Unidad;
+                    COSTOUNITARIO:   i.CostoUnit;
+                    COSTOTOTAL:      i.Cantidad * i.CostoUnit;
+                    FACTURA:         varFactura;
+                    PROVEEDOR:       varProveedor.Title;
+                    NIT_PROVEEDOR:   Coalesce(varProveedor.Nit; "");
+                    BODEGA:          i.Bodega;
+                    RESPONSABLE:     nfUser.Nombre;
+                    TIPODATA:        "INGRESO";
+                    TIPO_INGRESO:    {Value: "COMPRA"};
+                    PROYECTO_CODIGO: proy;
+                    PROYECTO_NOMBRE: If(varEsProyecto; varProyIng.NOMBRE; "");
+                    LOTE:            i.Lote;
+                    VENCE:           i.Vence
+                }
+            );;
+
+            If(
+                IsBlank(ex);
+                Patch(
+                    INV_Existencias;
+                    Defaults(INV_Existencias);
+                    {
+                        Title:           clave;
+                        CODIGO:          i.Codigo;
+                        BODEGA:          i.Bodega;
+                        PROYECTO:        proy;
+                        DESCRIPCION:     i.Descripcion;
+                        CATEGORIA:       i.Categoria;
+                        UNIDAD:          i.Unidad;
+                        EXISTENCIA:      i.Cantidad;
+                        MINIMO:          0;
+                        COSTO_ULT:       i.CostoUnit;
+                        REQ_PERSONA:     i.ReqPersona;
+                        INGREDIENTE:     i.Ingrediente;
+                        LOTE:            i.Lote;
+                        VENCE:           i.Vence;
+                        CorreoComprador: Coalesce(LookUp(colStock; Codigo = i.Codigo; Comprador); "");
+                        ACTIVO:          true
+                    }
+                );
+                Patch(
+                    INV_Existencias;
+                    ex;
+                    {
+                        EXISTENCIA: ex.EXISTENCIA + i.Cantidad;
+                        COSTO_ULT:  If(i.CostoUnit > 0; i.CostoUnit; ex.COSTO_ULT);
+                        LOTE:       If(IsBlank(i.Lote); ex.LOTE; i.Lote);
+                        VENCE:      If(IsBlank(i.Vence); ex.VENCE; i.Vence)
+                    }
+                )
+            )
+        )
+    )
+);;
+
+Refresh(INV_Existencias);;
+ForAll(
+    Distinct(colIng; Codigo) As c;
+    Patch(
+        PRODUCTOS;
+        LookUp(PRODUCTOS; CODIGO = c.Value);
+        {EXISTENCIA: Sum(Filter(INV_Existencias; CODIGO = c.Value); EXISTENCIA)}
+    )
+);;
+
+Notify(
+    "Ingreso guardado: " & CountRows(colIng) & " producto(s) a " &
+    Coalesce(LookUp(colAdminBod; B = varBodIng).N; varBodIng) &
+    If(varEsProyecto; " para " & varProyIng.Title; "") & ".";
+    NotificationType.Success
+);;
+Clear(colIng);;
+Set(varFactura; "");;
+Set(varProvNuevo; "");;
+Set(varProvTel; "");;
+Reset(txtIngFactura);;
+Set(varPopup; "");;
+Set(varGuardando; false);;
+Set(varProyStock; "");;
+Set(varBodStock; varBodIng);;
+Select(btnCargarStock)
+--------------------------------------------------------------------------------
+(DisplayMode de btnGuardarIngreso ESTA CORRECTO.)
+
+
+9.7 PROYECTO EN INGRESOS
+------------------------
+CONTROL   : tglEsProyecto
+PROPIEDAD Checked:
+=varEsProyecto
+(OnCheck y OnUncheck estan correctos.)
+
+CONTROL   : btnProyIng
+PROPIEDAD DisplayMode:
+=DisplayMode.Edit
+(quita el comentario //If(...) que tiene pegado)
+
+CONTROL   : btnCrearProy, txtProyNom
+ESTADO    : CORRECTOS, no se tocan. El codigo sale como PROY + PREFIJO_PROYECTO
+            de la bodega + correlativo: PROYMT-01, PROYMT-02...
+            REVISA que cada bodega tenga PREFIJO_PROYECTO lleno en INV_Bodegas
+            (MT, BG, CR...). Si esta vacio usa las 2 primeras letras del area.
+
+
+################################################################################
+PARTE 10 - CONTEO FISICO
+################################################################################
+
+10.1 COMO FUNCIONA AHORA
+------------------------
+  1. Entras a Conteo: se cargan los articulos habilitados de tu bodega.
+     Si dejaste un BORRADOR, se recupera solo (lo que ya contaste aparece).
+  2. Escribe la cantidad fisica. Filtra por categoria o busca por palabras.
+  3. "Guardar borrador" cuantas veces quieras: NO duplica, actualiza.
+     Puedes salir, cerrar la app, volver otro dia: sigue ahi.
+  4. "Enviar a autorizacion": el borrador pasa a ENVIADO y le llega correo
+     al gerente (CORREO_AUTORIZA de la bodega).
+  5. El gerente entra a Conteo, ve el folio, CONFIRMAR o RECHAZAR.
+     Al confirmar: la existencia queda igual al fisico, se registra el ajuste
+     en INGRESOS (sobrante) o SALIDAS (faltante) y se recalcula PRODUCTOS.
+
+10.2 CONTROLES
+--------------
+CONTROL   : btnCargarCnt
+TIPO      : Classic/Button
+UBICACION : cntVConteo > cntCntHeader
+PROPIEDAD OnSelect:
+=Select(btnCargarConteo)
+PROPIEDAD Text:
+="Recargar"
+
+CONTROL   : lblCntResumen
+TIPO      : Label
+UBICACION : cntVConteo > cntCntHeader
+PROPIEDAD Text:
+=varFolioCnt & If(!IsBlank(varFolioBorr) && varFolioBorr = varFolioCnt; "  (borrador recuperado)"; "") &
+ "   ·   " & CountRows(Filter(colCnt; Contado = true)) & " de " & CountRows(colCnt) & " contados" &
+ "   ·   " & CountRows(Filter(colCnt; Contado = true; Fisica <> Sistema)) & " con diferencia"
+
+CONTROL   : galConteo
+TIPO      : Gallery
+UBICACION : cntVConteo
+PROPIEDAD Items:
+=With(
+    {palabras: Filter(Split(Lower(Trim(varBuscarCnt)); " ") As w; !IsBlank(w.Value))};
+    Sort(
+        Filter(
+            colCnt As c;
+            Or(IsEmpty(colCatSel); c.Categoria in colCatSel.Cat);
+            CountRows(
+                Filter(palabras As w; !(w.Value in Lower(c.Codigo & " " & c.Descripcion & " " & c.Categoria & " " & c.Unidad)))
+            ) = 0
+        );
+        Descripcion;
+        SortOrder.Ascending
+    )
+)
+
+CONTROL   : txtCntFisica
+ESTADO    : CORRECTO (ya tiene Default = Text(ThisItem.Fisica)).
+
+CONTROL   : txtBuscarCnt
+PROPIEDAD OnChange:
+=Set(varBuscarCnt; Self.Text)
+PROPIEDAD HintText (o Placeholder si es moderno):
+="Buscar por codigo, nombre o categoria"
+
+CONTROL   : btnGuardarCnt
+TIPO      : Classic/Button
+UBICACION : cntVConteo > cntCntAccion
+CAMBIO    : actualiza la misma fila si ya existe (no duplica) y guarda CLAVE
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Set(varGuardando; true);;
+ForAll(
+    Filter(colCnt; Contado = true) As c;
+    With(
+        {r: LookUp(INV_Conteos; FOLIO = varFolioCnt && CLAVE = c.Clave)};
+        Patch(
+            INV_Conteos;
+            If(IsBlank(r); Defaults(INV_Conteos); r);
+            {
+                Título:          varFolioCnt & "-" & c.Codigo;
+                FOLIO:           varFolioCnt;
+                CLAVE:           c.Clave;
+                FECHA_CONTEO:    Now();
+                BODEGA:          varBodConteo;
+                CODIGO:          c.Codigo;
+                DESCRIPCION:     c.Descripcion;
+                CATEGORIA:       c.Categoria;
+                UNIDAD:          c.Unidad;
+                EXIST_SISTEMA:   c.Sistema;
+                EXIST_FISICA:    c.Fisica;
+                DIFERENCIA:      c.Fisica - c.Sistema;
+                ESTADO:          {Value: "BORRADOR"};
+                CONTADO_POR:     nfPersonaUser;
+                CORREO_AUTORIZA: Lower(Coalesce(LookUp(nfBodegasAll; Title = varBodConteo).CORREO_AUTORIZA; ""));
+                COMENTARIO:      txtCntComentario.Text;
+                APLICADO:        false
+            }
+        )
+    )
+);;
+Set(varFolioBorr; varFolioCnt);;
+Set(varGuardando; false);;
+Notify("Borrador guardado. Puede salir y continuar despues."; NotificationType.Success)
+--------------------------------------------------------------------------------
+PROPIEDAD DisplayMode:
+=If(Or(varGuardando; CountRows(Filter(colCnt; Contado = true)) = 0); DisplayMode.Disabled; DisplayMode.Edit)
+
+CONTROL   : btnEnviarCnt
+TIPO      : Classic/Button
+UBICACION : cntVConteo > cntCntAccion
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Set(varGuardando; true);;
+With(
+    {
+        bod:  LookUp(nfBodegasAll; Title = varBodConteo);
+        dife: Filter(colCnt; Contado = true; Fisica <> Sistema)
+    };
+
+    ForAll(
+        Filter(colCnt; Contado = true) As c;
+        With(
+            {r: LookUp(INV_Conteos; FOLIO = varFolioCnt && CLAVE = c.Clave)};
+            Patch(
+                INV_Conteos;
+                If(IsBlank(r); Defaults(INV_Conteos); r);
+                {
+                    Título:          varFolioCnt & "-" & c.Codigo;
+                    FOLIO:           varFolioCnt;
+                    CLAVE:           c.Clave;
+                    FECHA_CONTEO:    Now();
+                    BODEGA:          varBodConteo;
+                    CODIGO:          c.Codigo;
+                    DESCRIPCION:     c.Descripcion;
+                    CATEGORIA:       c.Categoria;
+                    UNIDAD:          c.Unidad;
+                    EXIST_SISTEMA:   c.Sistema;
+                    EXIST_FISICA:    c.Fisica;
+                    DIFERENCIA:      c.Fisica - c.Sistema;
+                    ESTADO:          {Value: "ENVIADO"};
+                    CONTADO_POR:     nfPersonaUser;
+                    CORREO_AUTORIZA: Lower(Coalesce(bod.CORREO_AUTORIZA; ""));
+                    COMENTARIO:      txtCntComentario.Text;
+                    APLICADO:        false
+                }
+            )
+        )
+    );;
+
+    Office365Outlook.SendEmailV2(
+        Coalesce(bod.CORREO_AUTORIZA; nfUser.Correo);
+        "Conteo fisico " & varFolioCnt & " - " & bod.NOMBRE & " - requiere su autorizacion";
+        "<div style='font-family: Arial, sans-serif; font-size: 9pt;'>" &
+        "<p>" & nfUser.Nombre & " realizo un conteo fisico en <b>" & bod.NOMBRE & "</b> el " &
+        Text(Now(); "dd/mm/yyyy hh:mm") & ".</p>" &
+        "<p>Se contaron " & CountRows(Filter(colCnt; Contado = true)) &
+        " productos y se encontraron <b>" & CountRows(dife) & "</b> diferencias:</p>" &
+        "<table style='border-collapse:collapse;width:100%;font-size:9pt;'>" &
+        "<thead><tr>" &
+            "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>CODIGO</th>" &
+            "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>DESCRIPCION</th>" &
+            "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>SISTEMA</th>" &
+            "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>FISICO</th>" &
+            "<th style='background:#1E3050;color:#fff;border:1px solid #999;padding:6px;'>DIFERENCIA</th>" &
+        "</tr></thead><tbody>" &
+        Concat(
+            dife;
+            "<tr>" &
+            "<td style='border:1px solid #ccc;padding:5px;text-align:center;'>" & Codigo & "</td>" &
+            "<td style='border:1px solid #ccc;padding:5px;'>" & Descripcion & "</td>" &
+            "<td style='border:1px solid #ccc;padding:5px;text-align:center;'>" & Sistema & "</td>" &
+            "<td style='border:1px solid #ccc;padding:5px;text-align:center;'>" & Fisica & "</td>" &
+            "<td style='border:1px solid #ccc;padding:5px;text-align:center;color:" &
+                If(Fisica > Sistema; "#157F5B"; "#A62B2B") & ";'><b>" &
+                If(Fisica > Sistema; "+"; "") & (Fisica - Sistema) & "</b></td>" &
+            "</tr>"
+        ) &
+        "</tbody></table>" &
+        "<p><b>Comentario del encargado:</b> " & Coalesce(txtCntComentario.Text; "sin comentario") & "</p>" &
+        "<p>Ingrese a la aplicacion de inventario, seccion <b>Conteo fisico</b>, y presione " &
+        "<b>CONFIRMAR</b> para que el sistema quede igual al fisico, o <b>RECHAZAR</b> " &
+        "si desea que se vuelva a contar.</p>" &
+        "</div>";
+        {IsHtml: true; Importance: "High"}
+    )
+);;
+Notify("Conteo " & varFolioCnt & " enviado a autorizacion."; NotificationType.Success);;
+Reset(txtCntComentario);;
+Set(varGuardando; false);;
+Select(btnCargarConteo)
+--------------------------------------------------------------------------------
+
+CONTROL   : btnAutorizar
+TIPO      : Classic/Button
+UBICACION : cntVConteo > cntVAutoriza
+CAMBIOS   : (1) usa CLAVE (articulos de proyecto)  (2) recalcula PRODUCTOS
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Set(varGuardando; true);;
+Refresh(INV_Existencias);;
+
+ClearCollect(
+    colCntAplicar;
+    ForAll(
+        Filter(INV_Conteos; FOLIO = varFolioAut; ESTADO.Value = "ENVIADO"; APLICADO = false) As c;
+        {
+            IdCnt:  c.ID;
+            Clave:  Coalesce(c.CLAVE; c.CODIGO & "|" & c.BODEGA);
+            Cod:    c.CODIGO;
+            Desc:   c.DESCRIPCION;
+            Cat:    c.CATEGORIA;
+            Und:    c.UNIDAD;
+            Bod:    c.BODEGA;
+            Folio:  c.FOLIO;
+            Dif:    c.DIFERENCIA;
+            Fisica: c.EXIST_FISICA
+        }
+    )
+);;
+
+ForAll(
+    colCntAplicar As c;
+    With(
+        {ex: LookUp(INV_Existencias; Title = c.Clave)};
+
+        If(
+            c.Dif > 0;
+            Patch(
+                INGRESOS;
+                Defaults(INGRESOS);
+                {
+                    CODIGO:          c.Cod;
+                    FECHA:           Now();
+                    DESCRIPCION:     c.Desc;
+                    CATEGORIA:       c.Cat;
+                    CANTIDAD:        c.Dif;
+                    'UNIDAD MEDIDA': c.Und;
+                    BODEGA:          c.Bod;
+                    COSTOUNITARIO:   Coalesce(ex.COSTO_ULT; 0);
+                    COSTOTOTAL:      Coalesce(ex.COSTO_ULT; 0) * c.Dif;
+                    FACTURA:         c.Folio;
+                    PROVEEDOR:       "AJUSTE DE INVENTARIO";
+                    RESPONSABLE:     nfUser.Nombre;
+                    TIPODATA:        "INGRESO";
+                    TIPO_INGRESO:    {Value: "AJUSTE CONTEO"};
+                    PROYECTO_CODIGO: Coalesce(ex.PROYECTO; "")
+                }
+            )
+        );;
+
+        If(
+            c.Dif < 0;
+            Patch(
+                SALIDAS;
+                Defaults(SALIDAS);
+                {
+                    CODIGO:          c.Cod;
+                    DESCRIPCION:     c.Desc;
+                    CATEGORIA:       c.Cat;
+                    SALIDA:          Abs(c.Dif);
+                    'UNIDAD MEDIDA': c.Und;
+                    'AREA USO':      "AJUSTE DE INVENTARIO";
+                    BODEGA:          c.Bod;
+                    NO_SALIDA:       c.Folio;
+                    FECHA:           Now();
+                    RESPONSABLE:     nfUser.Nombre;
+                    CORREO_SOLICITA: nfUser.Correo;
+                    TIPODATA:        "AJUSTE";
+                    CONFIRMA:        false;
+                    ESTADO:          {Value: "ENTREGADO"};
+                    ENTREGADO:       Now();
+                    CANT_ENTREGADA:  Abs(c.Dif);
+                    CANT_DEVUELTA:   0;
+                    MOTIVO_AJUSTE:   "Conteo fisico autorizado por " & nfUser.Nombre;
+                    AJUSTADO_POR:    nfPersonaUser;
+                    FECHA_AJUSTE:    Now();
+                    PROYECTO_CODIGO: Coalesce(ex.PROYECTO; "");
+                    ProcesadoBodega: true
+                }
+            )
+        );;
+
+        If(!IsBlank(ex); Patch(INV_Existencias; ex; {EXISTENCIA: c.Fisica}));;
+
+        Patch(
+            INV_Conteos;
+            LookUp(INV_Conteos; ID = c.IdCnt);
+            {
+                ESTADO:         {Value: "AUTORIZADO"};
+                APLICADO:       true;
+                AUTORIZADO_POR: nfUser.Nombre;
+                FECHA_AUTORIZA: Now()
+            }
+        )
+    )
+);;
+
+Refresh(INV_Existencias);;
+ForAll(
+    Distinct(colCntAplicar; Cod) As k;
+    Patch(
+        PRODUCTOS;
+        LookUp(PRODUCTOS; CODIGO = k.Value);
+        {EXISTENCIA: Sum(Filter(INV_Existencias; CODIGO = k.Value); EXISTENCIA)}
+    )
+);;
+
+Clear(colCntAplicar);;
+Notify("Conteo " & varFolioAut & " autorizado. El sistema quedo igual al fisico."; NotificationType.Success);;
+Set(varFolioAut; "");;
+Set(varGuardando; false)
+--------------------------------------------------------------------------------
+
+CONTROL   : btnRechazar
+ESTADO    : CORRECTO. (Al rechazar, el encargado vuelve a contar desde cero.)
+
+CONTROL   : galConteosPend, btnVerConteo, lblAutResumen, btnCntCategoria, btnCntBodega
+ESTADO    : CORRECTOS.
+
+NOTA: el popup CAT de Conteo ahora saca las categorias de lo que esta cargado
+(colCnt), por eso ya no sale "La consulta no es valida".
+
+
+################################################################################
+PARTE 11 - CREAR CODIGOS (arreglo de combobox y cajas que se borraban)
+################################################################################
+
+Mismo problema que en Ingresos: cada caja actualiza colNuevos, la galeria se
+redibuja y cada control vuelve a su Default. Se ata cada control a su campo.
+
+CONTROL   : btnAgregarFila
+TIPO      : Classic/Button
+UBICACION : cntVCodigos > cntCodHeader
+PROPIEDAD OnSelect:
+=Collect(
+    colNuevos;
+    {
+        Fila:       Coalesce(Max(colNuevos; Fila); 0) + 1;
+        Categoria:  "";
+        Nombre:     "";
+        Unidad:     "";
+        Bodega:     First(Sort(colCodBod; O; SortOrder.Ascending)).B;
+        Minimo:     0;
+        Estante:    "";
+        Comprador:  "";
+        ReqPersona: false
+    }
+)
+(Antes usaba CountRows + 1: si quitabas una fila y agregabas otra, quedaban
+dos con el mismo numero y una pisaba a la otra.)
+
+CONTROL   : cmbCodCat
+TIPO      : ModernCombobox
+UBICACION : galNuevos > cntCodFila
+PROPIEDAD Items:
+=colCategorias
+PROPIEDAD DefaultSelectedItems:
+=Filter(colCategorias; Value = ThisItem.Categoria)
+PROPIEDAD OnChange:
+=UpdateIf(
+    colNuevos;
+    Fila = ThisItem.Fila;
+    {
+        Categoria:  Self.Selected.Value;
+        ReqPersona: Self.Selected.Value = nfCatEPP
+    }
+)
+PROPIEDAD AccessibleLabel:
+="Categoria"
+
+CONTROL   : txtCodNombre
+TIPO      : ModernTextInput
+PROPIEDAD Default:
+=ThisItem.Nombre
+PROPIEDAD Visible:
+=true
+(OnChange correcto.)
+
+CONTROL   : txtCodUnidad
+TIPO      : Classic/TextInput
+PROPIEDAD Default:
+=ThisItem.Unidad
+
+CONTROL   : txtCodMinimo
+TIPO      : Classic/TextInput
+PROPIEDAD Default:
+=If(ThisItem.Minimo = 0; ""; Text(ThisItem.Minimo))
+PROPIEDAD Format:
+=TextFormat.Number
+
+CONTROL   : txtCodEstante
+TIPO      : Classic/TextInput
+PROPIEDAD Default:
+=ThisItem.Estante
+
+CONTROL   : txtCodComprador
+TIPO      : Classic/TextInput
+PROPIEDAD Default:
+=ThisItem.Comprador
+
+CONTROL   : tglCodEPP
+TIPO      : ModernToggle
+PROPIEDAD Checked:
+=ThisItem.ReqPersona
+PROPIEDAD Label:
+="Se entrega a una persona (EPP)"
+(OnCheck / OnUncheck correctos.)
+
+CONTROL   : lblCodDup
+TIPO      : Label
+PROPIEDAD Text:
+="Parecidos: " & Concat(
+    FirstN(Filter(colProductos; Lower(ThisItem.Nombre) in Lower(Descripcion)); 3);
+    Codigo & " " & Descripcion;
+    "  |  "
+)
+PROPIEDAD Visible:
+=Len(ThisItem.Nombre) > 3 && !IsBlank(LookUp(colProductos; Lower(ThisItem.Nombre) in Lower(Descripcion); Codigo))
+
+CONTROL   : btnGuardarCodigos
+PROPIEDAD DisplayMode:
+=If(
+    Or(
+        varGuardando;
+        IsEmpty(colNuevos);
+        CountRows(Filter(colNuevos; Or(IsBlank(Categoria); Len(Trim(Nombre)) < 3; IsBlank(Trim(Unidad)); IsBlank(Bodega)))) > 0
+    );
+    DisplayMode.Disabled;
+    DisplayMode.Edit
+)
+(OnSelect ESTA CORRECTO.)
+
+NOTA: la lista de categorias sale de PRODUCTOS (colCategorias, Parte 5.3).
+Una categoria nueva se crea una vez en SharePoint (en un producto) o pidiendomela
+como lista aparte; por ahora el combo muestra las que ya existen.
+
+
+################################################################################
+PARTE 12 - CATALOGO Y EXISTENCIAS
+################################################################################
+
+12.1 QUE HACE AHORA
+-------------------
+  - Arranca en Bodega General, mostrando solo HABILITADOS.
+  - Busca por cualquier palabra (codigo, nombre, categoria, unidad, bodega,
+    estante, lote, proyecto, ingrediente).
+  - Quien administra esa bodega (encargado, o admin) ve en cada fila:
+      Editar · Habilitar/Deshabilitar · Dar de baja · Pasar a general (si es de proyecto)
+    y un boton para ver Habilitados / Deshabilitados / Todos.
+  - Los demas usuarios solo ven lo habilitado y no ven esos botones.
+  - Un articulo deshabilitado NO aparece en Salidas ni en Ingresos de esa bodega.
+  - "Descargar Excel" baja exactamente lo que esta filtrado en pantalla.
+
+12.2 FILTROS
+------------
+CONTROL NUEVO : btnCatEstado
+TIPO          : Classic/Button
+UBICACION     : cntVCatalogo > cntFiltrosCat > cntCatTipos (despues de btnSoloMin)
+   Text       : =Switch(varVerEstado; "HAB"; "Ver: habilitados"; "DES"; "Ver: deshabilitados"; "Ver: todos") & "   v"
+   Visible    : =Or(nfEsAdmin; And(nfPuedeEditar; varBodCat in colAdminBod.B))
+   Width      : =180
+   Height     : =34
+   Fill       : =If(varVerEstado = "HAB"; ColorValue(nfCol.Surface2); ColorValue(nfCol.AmberSoft))
+   Color      : =ColorValue(nfCol.Ink)
+   OnSelect   :
+=Set(varVerEstado; Switch(varVerEstado; "HAB"; "DES"; "DES"; "TODOS"; "HAB"))
+
+CONTROL   : btnCatBodega
+ESTADO    : CORRECTO.
+
+CONTROL   : btnDescargarExcel
+TIPO      : Classic/Button
+UBICACION : cntVCatalogo > cntFiltrosCat > cntCatTipos
+PROPIEDAD Visible:
+=nfPuedeExcel
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Set(varDescargando; true);;
+Notify("Generando el Excel, espere unos segundos..."; NotificationType.Information);;
+Set(
+    varLinkExcel;
+    INV_ExportarExcel.Run(
+        JSON(
+            ForAll(
+                galCatalogo.AllItems As r;
+                {
+                    'Código':             r.Codigo;
+                    Existencia:           r.Existencia;
+                    'Descripción':        r.Descripcion;
+                    Bodega:               r.BodegaNom;
+                    'Requiere EPP':       If(r.ReqPersona; "SI"; "NO");
+                    Unidad:               r.Unidad;
+                    'Fecha vencimiento':  r.VenceTxt;
+                    Lote:                 r.Lote;
+                    'Ingrediente activo': r.Ingrediente;
+                    'Categoría':          r.Categoria;
+                    Proyecto:             r.Proyecto;
+                    'Mínimo':             r.Minimo;
+                    'Costo unitario':     r.Costo;
+                    'Valor':              r.Existencia * r.Costo;
+                    Estado:               If(r.Habilitado; "HABILITADO"; "DESHABILITADO")
+                }
+            );
+            JSONFormat.IgnoreBinaryData
+        );
+        "Código;Existencia;Descripción;Bodega;Requiere EPP;Unidad;Fecha vencimiento;Lote;Ingrediente activo;Categoría;Proyecto;Mínimo;Costo unitario;Valor;Estado";
+        "Catalogo_" & varBodCat & "_" & Text(Now(); "yyyymmdd_hhmm")
+    ).linkdescarga
+);;
+If(
+    IsBlank(varLinkExcel);
+    Notify("No se pudo generar el archivo. Intente de nuevo."; NotificationType.Error);
+    Download(varLinkExcel)
+);;
+Set(varDescargando; false)
+--------------------------------------------------------------------------------
+(Las primeras 9 columnas son las que pediste, en ese orden. Las ultimas 6 son
+extra; si no las quieres, borra el campo del registro Y su nombre del texto
+de columnas.)
+
+CONTROL   : galCatChipsCat
+TIPO      : Gallery (horizontal)
+UBICACION : cntVCatalogo > cntFiltrosCat > cntCatBusqueda
+PROPIEDAD Items:
+=Sort(
+    Distinct(
+        Filter(colStock; Switch(varVerEstado; "DES"; !Habilitado; "TODOS"; true; Habilitado));
+        Categoria
+    );
+    Value;
+    SortOrder.Ascending
+)
+
+CONTROL   : txtCatBuscar
+TIPO      : Classic/TextInput
+PROPIEDAD HintText:
+="Buscar: codigo, nombre, unidad, estante, lote, proyecto..."
+(OnChange correcto.)
+
+CONTROL   : galCatalogo
+TIPO      : Gallery
+UBICACION : cntVCatalogo
+PROPIEDAD Items:
+--------------------------------------------------------------------------------
+=With(
+    {palabras: Filter(Split(Lower(Trim(varBuscarCat)); " ") As w; !IsBlank(w.Value))};
+    Sort(
+        Filter(
+            colStock As s;
+            Switch(varVerEstado; "DES"; !s.Habilitado; "TODOS"; true; s.Habilitado);
+            Or(IsEmpty(colCatSel); s.Categoria in colCatSel.Cat);
+            Or(!varSoloMin; And(s.Minimo > 0; s.Existencia <= s.Minimo));
+            CountRows(Filter(palabras As w; !(w.Value in s.Busca))) = 0
+        );
+        Descripcion;
+        SortOrder.Ascending
+    )
+)
+--------------------------------------------------------------------------------
+PROPIEDAD TemplateSize:
+=If(nfEsMovil; 230; 128)
+
+
+12.3 LA FILA DEL CATALOGO (dentro de galCatalogo > cntCat)
+----------------------------------------------------------
+CONTROL   : lblCatCategoria
+PROPIEDAD Text:
+=ThisItem.Categoria & If(IsBlank(ThisItem.Ingrediente); ""; "   ·   " & ThisItem.Ingrediente)
+
+CONTROL   : lblCatBodega
+PROPIEDAD Text:
+=ThisItem.BodegaNom & If(IsBlank(ThisItem.Proyecto); ""; "   ·   PROYECTO " & ThisItem.Proyecto)
+
+CONTROL   : lblCatValor
+PROPIEDAD Text:
+="Q " & Text(ThisItem.Existencia * ThisItem.Costo; "#,##0.00") &
+ "   ·   estante " & Coalesce(ThisItem.Estante; "-") &
+ If(IsBlank(ThisItem.Lote); ""; "   ·   lote " & ThisItem.Lote) &
+ If(IsBlank(ThisItem.VenceTxt); ""; "   ·   vence " & ThisItem.VenceTxt)
+
+CONTROL   : lblCatEstado
+PROPIEDAD Text:
+=If(
+    !ThisItem.Habilitado; "DESHABILITADO";
+    ThisItem.Existencia <= 0; "AGOTADO";
+    ThisItem.Minimo > 0 && ThisItem.Existencia <= ThisItem.Minimo; "BAJO MINIMO";
+    "OK"
+)
+PROPIEDAD Color:
+=If(
+    !ThisItem.Habilitado; ColorValue(nfCol.Slate);
+    ThisItem.Existencia <= 0; ColorValue(nfCol.Red);
+    ThisItem.Minimo > 0 && ThisItem.Existencia <= ThisItem.Minimo; ColorValue(nfCol.Amber);
+    ColorValue(nfCol.Accent)
+)
+PROPIEDAD Fill:
+=If(
+    !ThisItem.Habilitado; ColorValue(nfCol.SlateSoft);
+    ThisItem.Existencia <= 0; ColorValue(nfCol.RedSoft);
+    ThisItem.Minimo > 0 && ThisItem.Existencia <= ThisItem.Minimo; ColorValue(nfCol.AmberSoft);
+    ColorValue(nfCol.AccentSoft)
+)
+
+CONTROL   : btnEditarArt
+PROPIEDAD OnSelect:
+=Set(varEditArt; LookUp(INV_Existencias; ID = ThisItem.Id));;
+Set(varPopup; "EDITART")
+PROPIEDAD Visible:
+=Or(nfEsAdmin; And(nfPuedeEditar; ThisItem.Bodega in colAdminBod.B))
+
+CONTROL NUEVO : btnCatHab
+TIPO          : Classic/Button
+UBICACION     : galCatalogo > cntCat (despues de btnEditarArt)
+   Width      : =116
+   Height     : =32
+   Text       : =If(ThisItem.Habilitado; "Deshabilitar"; "Habilitar")
+   Fill       : =If(ThisItem.Habilitado; ColorValue(nfCol.Surface2); ColorValue(nfCol.AccentSoft))
+   Color      : =If(ThisItem.Habilitado; ColorValue(nfCol.Slate); ColorValue(nfCol.AccentInk))
+   Visible    : =Or(nfEsAdmin; And(nfPuedeEditar; ThisItem.Bodega in colAdminBod.B))
+   OnSelect   :
+=With(
+    {nuevo: !ThisItem.Habilitado; id: ThisItem.Id; cod: ThisItem.Codigo};
+    Patch(INV_Existencias; LookUp(INV_Existencias; ID = id); {ACTIVO: nuevo});;
+    UpdateIf(colStock; Id = id; {Habilitado: nuevo});;
+    Notify(cod & If(nuevo; " habilitado."; " deshabilitado."); NotificationType.Success)
+)
+
+CONTROL   : btnDarBaja
+PROPIEDAD OnSelect:
+=Set(varEditArt; LookUp(INV_Existencias; ID = ThisItem.Id));;
+Reset(txtBajaCant);;
+Reset(txtBajaMotivo);;
+Set(varPopup; "BAJA")
+PROPIEDAD Visible:
+=nfPuedeBaja && ThisItem.Existencia > 0 && Or(nfEsAdmin; ThisItem.Bodega in colAdminBod.B)
+
+CONTROL NUEVO : btnCatPasarGen
+TIPO          : Classic/Button
+UBICACION     : galCatalogo > cntCat (despues de btnDarBaja)
+FUNCION       : cuando un proyecto termina y sobra material, lo pasa al material
+                general de la misma bodega (queda registro de salida e ingreso).
+   Width      : =140
+   Height     : =32
+   Text       : ="Pasar a general"
+   Visible    : =!IsBlank(ThisItem.Proyecto) && ThisItem.Existencia > 0 &&
+                 Or(nfEsAdmin; And(nfPuedeEditar; ThisItem.Bodega in colAdminBod.B))
+   OnSelect   :
+--------------------------------------------------------------------------------
+=Set(varGuardando; true);;
+Refresh(INV_Existencias);;
+With(
+    {
+        ori:      LookUp(INV_Existencias; ID = ThisItem.Id);
+        claveGen: ThisItem.Codigo & "|" & ThisItem.Bodega
+    };
+    With(
+        {gen: LookUp(INV_Existencias; Title = claveGen); cant: ori.EXISTENCIA};
+
+        Patch(
+            SALIDAS;
+            Defaults(SALIDAS);
+            {
+                CODIGO:          ori.CODIGO;
+                DESCRIPCION:     ori.DESCRIPCION;
+                CATEGORIA:       ori.CATEGORIA;
+                SALIDA:          cant;
+                'UNIDAD MEDIDA': ori.UNIDAD;
+                'AREA USO':      "TRASLADO A GENERAL";
+                BODEGA:          ori.BODEGA;
+                NO_SALIDA:       "TRA-" & Text(Now(); "yyyymmddhhmmss");
+                FECHA:           Now();
+                RESPONSABLE:     nfUser.Nombre;
+                CORREO_SOLICITA: nfUser.Correo;
+                TIPODATA:        "AJUSTE";
+                CONFIRMA:        false;
+                ESTADO:          {Value: "ENTREGADO"};
+                ENTREGADO:       Now();
+                CANT_ENTREGADA:  cant;
+                CANT_DEVUELTA:   0;
+                MOTIVO_AJUSTE:   "Sobrante del proyecto " & ori.PROYECTO;
+                AJUSTADO_POR:    nfPersonaUser;
+                FECHA_AJUSTE:    Now();
+                PROYECTO_CODIGO: ori.PROYECTO;
+                ProcesadoBodega: true
+            }
+        );;
+
+        Patch(
+            INGRESOS;
+            Defaults(INGRESOS);
+            {
+                CODIGO:          ori.CODIGO;
+                FECHA:           Now();
+                DESCRIPCION:     ori.DESCRIPCION;
+                CATEGORIA:       ori.CATEGORIA;
+                CANTIDAD:        cant;
+                'UNIDAD MEDIDA': ori.UNIDAD;
+                BODEGA:          ori.BODEGA;
+                COSTOUNITARIO:   Coalesce(ori.COSTO_ULT; 0);
+                COSTOTOTAL:      Coalesce(ori.COSTO_ULT; 0) * cant;
+                FACTURA:         "SOBRANTE " & ori.PROYECTO;
+                PROVEEDOR:       "TRASLADO INTERNO";
+                RESPONSABLE:     nfUser.Nombre;
+                TIPODATA:        "INGRESO";
+                TIPO_INGRESO:    {Value: "TRASLADO"};
+                LOTE:            ori.LOTE;
+                VENCE:           ori.VENCE
+            }
+        );;
+
+        If(
+            IsBlank(gen);
+            Patch(
+                INV_Existencias;
+                Defaults(INV_Existencias);
+                {
+                    Title:           claveGen;
+                    CODIGO:          ori.CODIGO;
+                    BODEGA:          ori.BODEGA;
+                    PROYECTO:        "";
+                    DESCRIPCION:     ori.DESCRIPCION;
+                    CATEGORIA:       ori.CATEGORIA;
+                    UNIDAD:          ori.UNIDAD;
+                    EXISTENCIA:      cant;
+                    MINIMO:          0;
+                    ESTANTE:         ori.ESTANTE;
+                    CorreoComprador: ori.CorreoComprador;
+                    REQ_PERSONA:     ori.REQ_PERSONA;
+                    COSTO_ULT:       ori.COSTO_ULT;
+                    INGREDIENTE:     ori.INGREDIENTE;
+                    LOTE:            ori.LOTE;
+                    VENCE:           ori.VENCE;
+                    ACTIVO:          true
+                }
+            );
+            Patch(INV_Existencias; gen; {EXISTENCIA: gen.EXISTENCIA + cant})
+        );;
+
+        Patch(INV_Existencias; ori; {EXISTENCIA: 0; ACTIVO: false});;
+        Notify(cant & " " & ori.UNIDAD & " pasaron al material general de " & ori.BODEGA & "."; NotificationType.Success)
+    )
+);;
+Set(varGuardando; false);;
+Select(btnCargarStock)
+--------------------------------------------------------------------------------
+REQUISITO: en INGRESOS, la columna de opcion TIPO_INGRESO debe tener la opcion
+"TRASLADO" (agregala junto a COMPRA, DEVOLUCION, AJUSTE CONTEO).
+(El total en PRODUCTOS no cambia, porque el material sigue en la misma bodega.)
+
+
+12.4 POPUP DE EDITAR (cntPopForm)
+---------------------------------
+CONTROL   : cmbEdBodega
+ACCION    : ELIMINAR. Cambiar un articulo de bodega desde "Editar" movia el
+            saldo sin dejar registro. Para mover material entre bodegas se hace
+            salida en una e ingreso en la otra.
+
+CONTROL NUEVO : txtEdIngrediente
+TIPO          : Classic/TextInput
+UBICACION     : cntPopForm (en el lugar de cmbEdBodega)
+   Default    : =Coalesce(varEditArt.INGREDIENTE; "")
+   HintText   : ="Ingrediente activo (quimicos)"
+   Visible    : =varPopup = "EDITART"
+   Width      : =Parent.Width - 32
+   Height     : =38
+   X          : =16
+   Y          : =246
+
+CONTROL   : txtEdDesc
+PROPIEDAD Placeholder:
+="Nombre del producto"
+(Default correcto.)
+
+CONTROL   : txtEdUnidad, txtEdMinimo, txtEdEstante, txtEdComprador
+ESTADO    : CORRECTOS.
+
+CONTROL   : btnGuardarArt
+TIPO      : Classic/Button
+UBICACION : cntPopForm
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=With(
+    {
+        id:        varEditArt.ID;
+        cod:       varEditArt.CODIGO;
+        nuevaDesc: Upper(Trim(txtEdDesc.Text));
+        nuevaUnd:  Trim(txtEdUnidad.Text);
+        nuevoIng:  Trim(txtEdIngrediente.Text)
+    };
+    If(
+        Len(nuevaDesc) < 3;
+        Notify("El nombre del producto no puede quedar vacio."; NotificationType.Error);
+
+        /* lo de esta bodega */
+        Patch(
+            INV_Existencias;
+            LookUp(INV_Existencias; ID = id);
+            {
+                MINIMO:          Max(0; Value(txtEdMinimo.Text));
+                ESTANTE:         Trim(txtEdEstante.Text);
+                CorreoComprador: Lower(Trim(txtEdComprador.Text))
+            }
+        );;
+
+        /* lo del codigo: en todas sus bodegas y en el maestro */
+        UpdateIf(
+            INV_Existencias;
+            CODIGO = cod;
+            {DESCRIPCION: nuevaDesc; UNIDAD: nuevaUnd; INGREDIENTE: nuevoIng}
+        );;
+        Patch(
+            PRODUCTOS;
+            LookUp(PRODUCTOS; CODIGO = cod);
+            {DESCRIPCION: nuevaDesc; 'UNIDAD MEDIDA': nuevaUnd; INGREDIENTE: nuevoIng}
+        );;
+
+        Notify("Articulo actualizado."; NotificationType.Success);;
+        Set(varPopup; "");;
+        Select(btnCargarStock)
+    )
+)
+--------------------------------------------------------------------------------
+Nota: si prefieres que el nombre NO se pase a mayusculas, quita Upper().
+
+CONTROL   : btnConfirmarBaja
+TIPO      : Classic/Button
+UBICACION : cntPopForm
+CAMBIOS   : recalcula PRODUCTOS y recarga la pantalla
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=With(
+    {cant: Value(txtBajaCant.Text); folio: "BAJA-" & Text(Now(); "yyyymmddhhmmss")};
+
+    Patch(
+        INV_Bajas;
+        Defaults(INV_Bajas);
+        {
+            Title:        folio;
+            CODIGO:       varEditArt.CODIGO;
+            DESCRIPCION:  varEditArt.DESCRIPCION;
+            BODEGA:       varEditArt.BODEGA;
+            CANTIDAD:     cant;
+            UNIDAD:       varEditArt.UNIDAD;
+            MOTIVO:       Trim(txtBajaMotivo.Text);
+            FECHA_BAJA:   Now();
+            REGISTRO_POR: nfPersonaUser;
+            REACTIVADO:   false
+        }
+    );;
+
+    Patch(
+        SALIDAS;
+        Defaults(SALIDAS);
+        {
+            CODIGO:          varEditArt.CODIGO;
+            DESCRIPCION:     varEditArt.DESCRIPCION;
+            CATEGORIA:       varEditArt.CATEGORIA;
+            SALIDA:          cant;
+            'UNIDAD MEDIDA': varEditArt.UNIDAD;
+            'AREA USO':      "BAJA DE INVENTARIO";
+            BODEGA:          varEditArt.BODEGA;
+            NO_SALIDA:       folio;
+            FECHA:           Now();
+            RESPONSABLE:     nfUser.Nombre;
+            CORREO_SOLICITA: nfUser.Correo;
+            TIPODATA:        "AJUSTE";
+            CONFIRMA:        false;
+            ESTADO:          {Value: "ENTREGADO"};
+            ENTREGADO:       Now();
+            CANT_ENTREGADA:  cant;
+            CANT_DEVUELTA:   0;
+            MOTIVO_AJUSTE:   Trim(txtBajaMotivo.Text);
+            AJUSTADO_POR:    nfPersonaUser;
+            FECHA_AJUSTE:    Now();
+            PROYECTO_CODIGO: Coalesce(varEditArt.PROYECTO; "");
+            ProcesadoBodega: true
+        }
+    );;
+
+    Patch(
+        INV_Existencias;
+        LookUp(INV_Existencias; ID = varEditArt.ID);
+        {EXISTENCIA: varEditArt.EXISTENCIA - cant}
+    );;
+
+    Refresh(INV_Existencias);;
+    Patch(
+        PRODUCTOS;
+        LookUp(PRODUCTOS; CODIGO = varEditArt.CODIGO);
+        {EXISTENCIA: Sum(Filter(INV_Existencias; CODIGO = varEditArt.CODIGO); EXISTENCIA)}
+    )
+);;
+Notify("Baja registrada."; NotificationType.Success);;
+Set(varPopup; "");;
+Select(btnCargarStock)
+--------------------------------------------------------------------------------
+(DisplayMode de btnConfirmarBaja ESTA CORRECTO.)
+
+
+12.5 BAJAS - REACTIVAR
+----------------------
+CONTROL   : btnReactivar
+TIPO      : Classic/Button
+UBICACION : cntVBajas > galBajas > cntBaja > cntBajaPie
+CAMBIO    : recalcula PRODUCTOS (antes no lo hacia y el total quedaba corto)
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=With(
+    {ex: LookUp(INV_Existencias; Title = ThisItem.CODIGO & "|" & ThisItem.BODEGA)};
+    Patch(INV_Existencias; ex; {EXISTENCIA: Coalesce(ex.EXISTENCIA; 0) + ThisItem.CANTIDAD});;
+    Patch(
+        INGRESOS;
+        Defaults(INGRESOS);
+        {
+            CODIGO:          ThisItem.CODIGO;
+            FECHA:           Now();
+            DESCRIPCION:     ThisItem.DESCRIPCION;
+            CANTIDAD:        ThisItem.CANTIDAD;
+            'UNIDAD MEDIDA': ThisItem.UNIDAD;
+            BODEGA:          ThisItem.BODEGA;
+            COSTOUNITARIO:   Coalesce(ex.COSTO_ULT; 0);
+            COSTOTOTAL:      Coalesce(ex.COSTO_ULT; 0) * ThisItem.CANTIDAD;
+            FACTURA:         ThisItem.Title;
+            PROVEEDOR:       "REACTIVACION DE BAJA";
+            RESPONSABLE:     nfUser.Nombre;
+            TIPODATA:        "INGRESO";
+            TIPO_INGRESO:    {Value: "AJUSTE CONTEO"}
+        }
+    )
+);;
+Patch(INV_Bajas; LookUp(INV_Bajas; ID = ThisItem.ID); {REACTIVADO: true});;
+Refresh(INV_Existencias);;
+Patch(
+    PRODUCTOS;
+    LookUp(PRODUCTOS; CODIGO = ThisItem.CODIGO);
+    {EXISTENCIA: Sum(Filter(INV_Existencias; CODIGO = ThisItem.CODIGO); EXISTENCIA)}
+);;
+Notify("Articulo reactivado."; NotificationType.Success);;
+Select(btnRouter)
+--------------------------------------------------------------------------------
+
+
+################################################################################
+PARTE 13 - REPORTES
+################################################################################
+
+Flujo: eliges bodega, mes inicial, mes final y año -> "Consultar" -> ves los
+totales y el detalle -> "Descargar Excel" baja exactamente ese detalle.
+
+13.1 CONTROLES
+--------------
+CONTROL   : cmbRepBodega, cmbMesIni, cmbMesFin, txtAnioRep
+ESTADO    : CORRECTOS. Solo agrega en el OnChange de cada uno, al final:
+            ;; Clear(colRep)
+            para que no se descargue un reporte viejo. Quedan asi:
+
+  cmbRepBodega.OnChange : =Set(varBodRep; Self.Selected.Value);; Clear(colRep)
+  cmbMesIni.OnChange    : =Set(varMesIni; Self.Selected.N);; Clear(colRep)
+  cmbMesFin.OnChange    : =Set(varMesFin; Self.Selected.N);; Clear(colRep)
+  txtAnioRep.OnChange   : =Set(varAnioRep; Value(Self.Text));; Clear(colRep)
+
+CONTROL NUEVO : btnConsultarRep
+TIPO          : Classic/Button
+UBICACION     : cntVReportes > cntRepFiltros, ANTES de btnDescargarRep
+   Text       : =If(varGuardando; "Consultando..."; "Consultar")
+   Height     : =42
+   Width      : =140
+   Fill       : =ColorValue(nfCol.Nav)
+   Color      : =Color.White
+   DisplayMode: =If(Or(varGuardando; IsBlank(varBodRep); varAnioRep < 2000); DisplayMode.Disabled; DisplayMode.Edit)
+   OnSelect   :
+--------------------------------------------------------------------------------
+=Set(varGuardando; true);;
+Set(varRepDesde; Date(varAnioRep; Min(varMesIni; varMesFin); 1));;
+Set(varRepHasta; DateAdd(Date(varAnioRep; Max(varMesIni; varMesFin); 1); 1; TimeUnit.Months));;
+
+/* existencia actual de la bodega */
+ClearCollect(
+    colRepStock;
+    ForAll(
+        Filter(INV_Existencias; BODEGA = varBodRep) As e;
+        {
+            Codigo:     e.CODIGO;
+            Proyecto:   Coalesce(e.PROYECTO; "");
+            Existencia: Coalesce(e.EXISTENCIA; 0);
+            Minimo:     Coalesce(e.MINIMO; 0);
+            ReqPersona: Coalesce(e.REQ_PERSONA; false);
+            Costo:      Coalesce(e.COSTO_ULT; 0)
+        }
+    )
+);;
+
+/* ingresos del periodo */
+ClearCollect(
+    colRep;
+    ForAll(
+        Filter(INGRESOS; BODEGA = varBodRep; FECHA >= varRepDesde; FECHA < varRepHasta) As i;
+        With(
+            {st: LookUp(colRepStock; Codigo = i.CODIGO && Proyecto = Coalesce(i.PROYECTO_CODIGO; ""))};
+            {
+                Tipo:        Coalesce(i.TIPO_INGRESO.Value; "INGRESO");
+                Codigo:      i.CODIGO;
+                Fecha:       Date(Year(i.FECHA); Month(i.FECHA); Day(i.FECHA));
+                FechaTxt:    Text(i.FECHA; "dd/mm/yyyy");
+                Mes:         Upper(Text(i.FECHA; "mmmm"));
+                Anio:        Year(i.FECHA);
+                Descripcion: i.DESCRIPCION;
+                Ingreso:     Coalesce(i.CANTIDAD; 0);
+                Salida:      0;
+                Existencia:  Coalesce(st.Existencia; 0);
+                CostoUnit:   Coalesce(i.COSTOUNITARIO; 0);
+                CostoTotal:  Coalesce(i.COSTOTOTAL; 0);
+                Proveedor:   Coalesce(i.PROVEEDOR; "");
+                VenceTxt:    If(IsBlank(i.VENCE); ""; Text(i.VENCE; "dd/mm/yyyy"));
+                Bodega:      i.BODEGA;
+                Minimo:      Coalesce(st.Minimo; 0);
+                ReqPersona:  Coalesce(st.ReqPersona; false);
+                Proyecto:    Coalesce(i.PROYECTO_CODIGO; "");
+                Destino:     Coalesce(i.FACTURA; "")
+            }
+        )
+    )
+);;
+
+/* salidas del periodo (neto de lo devuelto) */
+Collect(
+    colRep;
+    ForAll(
+        Filter(SALIDAS; BODEGA = varBodRep; FECHA >= varRepDesde; FECHA < varRepHasta) As s;
+        With(
+            {
+                st:   LookUp(colRepStock; Codigo = s.CODIGO && Proyecto = Coalesce(s.PROYECTO_CODIGO; ""));
+                neto: Coalesce(s.SALIDA; 0) - Coalesce(s.CANT_DEVUELTA; 0)
+            };
+            {
+                Tipo:        If(s.ESTADO.Value = "ANULADO"; "ANULADO"; Coalesce(s.TIPODATA; "SALIDA"));
+                Codigo:      s.CODIGO;
+                Fecha:       Date(Year(s.FECHA); Month(s.FECHA); Day(s.FECHA));
+                FechaTxt:    Text(s.FECHA; "dd/mm/yyyy");
+                Mes:         Upper(Text(s.FECHA; "mmmm"));
+                Anio:        Year(s.FECHA);
+                Descripcion: s.DESCRIPCION;
+                Ingreso:     0;
+                Salida:      neto;
+                Existencia:  Coalesce(st.Existencia; 0);
+                CostoUnit:   Coalesce(st.Costo; 0);
+                CostoTotal:  Coalesce(st.Costo; 0) * neto;
+                Proveedor:   "";
+                VenceTxt:    "";
+                Bodega:      s.BODEGA;
+                Minimo:      Coalesce(st.Minimo; 0);
+                ReqPersona:  Coalesce(st.ReqPersona; false);
+                Proyecto:    Coalesce(s.PROYECTO_CODIGO; "");
+                Destino:     Coalesce(s.'AREA USO'; "") & " · " & Coalesce(s.RESPONSABLE; "")
+            }
+        )
+    )
+);;
+RemoveIf(colRep; Tipo = "ANULADO" || (Ingreso = 0 && Salida = 0));;
+Set(varGuardando; false);;
+If(
+    IsEmpty(colRep);
+    Notify("No hay movimientos en ese periodo."; NotificationType.Information);
+    Notify(CountRows(colRep) & " movimientos."; NotificationType.Success)
+)
+--------------------------------------------------------------------------------
+
+CONTROL   : btnDescargarRep
+TIPO      : Classic/Button
+UBICACION : cntVReportes > cntRepFiltros
+PROPIEDAD Text:
+="Descargar Excel"
+PROPIEDAD DisplayMode:
+=If(Or(varDescargando; IsEmpty(colRep)); DisplayMode.Disabled; DisplayMode.Edit)
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=Set(varDescargando; true);;
+Notify("Generando el Excel, espere unos segundos..."; NotificationType.Information);;
+Set(
+    varLinkExcel;
+    INV_ExportarExcel.Run(
+        JSON(
+            ForAll(
+                Sort(colRep; Fecha; SortOrder.Ascending) As r;
+                {
+                    'Código':            r.Codigo;
+                    Fecha:               r.FechaTxt;
+                    Mes:                 r.Mes;
+                    'Año':               r.Anio;
+                    'Descripción':       r.Descripcion;
+                    Ingreso:             r.Ingreso;
+                    Salidas:             r.Salida;
+                    Existencia:          r.Existencia;
+                    'Costo unitario':    r.CostoUnit;
+                    'Costo total':       r.CostoTotal;
+                    Proveedor:           r.Proveedor;
+                    'Fecha vencimiento': r.VenceTxt;
+                    Bodega:              Coalesce(LookUp(nfBodegasAll; Title = r.Bodega).NOMBRE; r.Bodega);
+                    'Mínimo':            r.Minimo;
+                    'Requiere EPP':      If(r.ReqPersona; "SI"; "NO");
+                    Movimiento:          r.Tipo;
+                    Proyecto:            r.Proyecto;
+                    'Factura / Destino': r.Destino
+                }
+            );
+            JSONFormat.IgnoreBinaryData
+        );
+        "Código;Fecha;Mes;Año;Descripción;Ingreso;Salidas;Existencia;Costo unitario;Costo total;Proveedor;Fecha vencimiento;Bodega;Mínimo;Requiere EPP;Movimiento;Proyecto;Factura / Destino";
+        "Reporte_" & varBodRep & "_" & varAnioRep & "_" & Text(varMesIni; "00") & "-" & Text(varMesFin; "00")
+    ).linkdescarga
+);;
+If(
+    IsBlank(varLinkExcel);
+    Notify("No se pudo generar el archivo. Intente de nuevo."; NotificationType.Error);
+    Download(varLinkExcel)
+);;
+Set(varDescargando; false)
+--------------------------------------------------------------------------------
+
+CONTROL   : galRepKpis
+TIPO      : Gallery
+UBICACION : cntVReportes
+PROPIEDAD Items:
+=Table(
+    {Val: "Q " & Text(Sum(Filter(colRep; Tipo = "COMPRA"); CostoTotal); "#,##0.00"); Etq: "Comprado en el periodo"};
+    {Val: Text(Sum(colRep; Ingreso); "#,##0");                                     Etq: "Unidades que ingresaron"};
+    {Val: Text(Sum(colRep; Salida); "#,##0");                                      Etq: "Unidades que salieron"};
+    {Val: "Q " & Text(Sum(colRepStock; Existencia * Costo); "#,##0.00");           Etq: "Inventario valorizado hoy"}
+)
+
+CONTROL   : lblRepTtl
+PROPIEDAD Text:
+=If(
+    IsEmpty(colRep);
+    "Elija bodega y periodo y presione Consultar";
+    CountRows(colRep) & " movimientos   ·   " &
+    Coalesce(LookUp(nfBodegasAll; Title = varBodRep).NOMBRE; varBodRep) & "   ·   " &
+    Text(varRepDesde; "dd/mm/yyyy") & " al " & Text(DateAdd(varRepHasta; -1; TimeUnit.Days); "dd/mm/yyyy")
+)
+
+CONTROL NUEVO : galRepDetalle
+TIPO          : Gallery (vertical, en blanco)
+UBICACION     : cntVReportes, al final (despues de cntRepFiltros)
+   Items        : =Sort(colRep; Fecha; SortOrder.Descending)
+   FillPortions : =1
+   TemplateSize : =If(nfEsMovil; 64; 44)
+   Hijo:
+     lblRepFila (Label)
+        Width  : =Parent.TemplateWidth - 16
+        X      : =8
+        Height : =Parent.TemplateHeight - 4
+        Text   : =ThisItem.FechaTxt & "   " & ThisItem.Codigo & "   " & ThisItem.Descripcion & "   ·   " &
+                  If(ThisItem.Ingreso > 0; "+" & ThisItem.Ingreso; "-" & ThisItem.Salida) &
+                  "   ·   Q " & Text(ThisItem.CostoTotal; "#,##0.00") & "   ·   " & ThisItem.Tipo
+        Color  : =If(ThisItem.Ingreso > 0; ColorValue(nfCol.Accent); ColorValue(nfCol.Ink))
+        Size   : =10
+
+LIMITE: cada consulta trae hasta 2,000 ingresos y 2,000 salidas del periodo en
+esa bodega. Si una bodega pasa de eso en el rango elegido, consulta por meses.
+
+
+################################################################################
+PARTE 14 - EXCEL: UN SOLO FLUJO PARA CATALOGO Y REPORTES
+################################################################################
+
+La app manda los datos ya filtrados (en JSON), el flujo los escribe en un Excel
+nuevo y devuelve el enlace de descarga directa. Reemplaza a INV_DescargarInventario.
+
+14.1 PLANTILLA (una vez)
+------------------------
+  En tu OneDrive crea la carpeta  /Inventario/Exportaciones
+  Dentro crea un libro vacio llamado  Plantilla_Export.xlsx  con una hoja
+  llamada  Datos  (sin nada mas).
+
+14.2 OFFICE SCRIPT  "EscribirTabla"
+-----------------------------------
+  Excel en la web > Automatizar > Nuevo script > pega esto > Guardar como
+  "EscribirTabla".
+--------------------------------------------------------------------------------
+function main(workbook: ExcelScript.Workbook, datos: string, columnas: string) {
+  const filas: Record<string, string | number | boolean>[] = JSON.parse(datos);
+  const cols: string[] = columnas.split(";");
+
+  let hoja = workbook.getWorksheet("Datos");
+  if (!hoja) {
+    hoja = workbook.addWorksheet("Datos");
+  }
+  hoja.getRange().clear();
+
+  const valores: (string | number | boolean)[][] = [cols];
+  for (const f of filas) {
+    const linea: (string | number | boolean)[] = [];
+    for (const c of cols) {
+      const v = f[c];
+      linea.push(v === null || v === undefined ? "" : v);
+    }
+    valores.push(linea);
+  }
+
+  const rango = hoja.getRangeByIndexes(0, 0, valores.length, cols.length);
+  rango.setValues(valores);
+
+  if (filas.length > 0) {
+    const tabla = hoja.addTable(rango, true);
+    tabla.setName("tblDatos");
+    tabla.setPredefinedTableStyle("TableStyleMedium2");
+  }
+  hoja.getFreezePanes().freezeRows(1);
+  hoja.getRange().getFormat().autofitColumns();
+}
+--------------------------------------------------------------------------------
+
+14.3 FLUJO  "INV_ExportarExcel"
+-------------------------------
+  1. Desencadenador: "Cuando Power Apps llama a un flujo (V2)"
+       Entradas (las tres de tipo Texto, en este orden):
+         datos
+         columnas
+         nombre
+
+  2. OneDrive para la Empresa > "Copiar archivo"
+       Archivo                : /Inventario/Exportaciones/Plantilla_Export.xlsx
+       Ruta de destino        : /Inventario/Exportaciones/  +  [nombre]  +  .xlsx
+                                ([nombre] = la entrada "nombre" desde contenido dinamico)
+       Sobrescribir           : Si
+
+  3. Excel Online (Empresa) > "Ejecutar script"
+       Ubicacion   : OneDrive para la Empresa
+       Biblioteca  : OneDrive
+       Archivo     : "Id" de "Copiar archivo"
+       Script      : EscribirTabla
+       datos       : datos      (contenido dinamico)
+       columnas    : columnas   (contenido dinamico)
+
+  4. OneDrive para la Empresa > "Crear vinculo para compartir"
+       Archivo     : "Id" de "Copiar archivo"
+       Tipo        : Ver
+       Ambito      : Organizacion
+
+  5. "Responder a una aplicacion o flujo de PowerApps"
+       Salida de tipo Texto, nombre:  linkdescarga
+       Valor (expresion):
+       if(contains(body('Crear_vínculo_para_compartir')?['link']?['webUrl'],'?'),
+          concat(body('Crear_vínculo_para_compartir')?['link']?['webUrl'],'&download=1'),
+          concat(body('Crear_vínculo_para_compartir')?['link']?['webUrl'],'?download=1'))
+
+       (El nombre interno de la accion puede ser distinto; si te marca error,
+        elige "Vinculo web" en contenido dinamico y usa la misma expresion con
+        ese valor.)
+
+  6. Guarda el flujo. En Power Apps: Datos/Power Automate > Agregar flujo >
+     INV_ExportarExcel. Quita INV_DescargarInventario de la app.
+
+  OPCIONAL: un flujo programado semanal que borre de /Exportaciones los
+  archivos de mas de 7 dias, para que no se llene la carpeta.
+
+
+################################################################################
+PARTE 15 - PANTALLA DE ACCESOS (reutilizando conVista_Accesos)
+################################################################################
+
+15.1 PEGAR Y CONECTAR
+---------------------
+  1. Pega conVista_Accesos DENTRO de cntCuerpo (igual que las otras cntV...).
+     Renombralo a  cntVAccesos.
+  2. Elimina: txtAccSede (y hdrAccSede/lblAccSede si existen) y btnCargarAccesos
+     (la carga ahora la hace btnRouter al entrar a "ACC").
+  3. Cambia estas referencias en TODOS sus controles (Ctrl+H no existe en
+     Power Apps; revisa propiedad por propiedad, sobre todo Fill y Color):
+
+        ANTES                         AHORA
+        ----------------------------  ------------------------------------
+        gloVista = "ACCESOS"          varPantalla = "ACC"
+        bpTablet                      nfCorteMovil
+        clrSurface                    ColorValue(nfCol.Surface)
+        clrSurface3                   ColorValue(nfCol.Surface3)
+        hexInk  (dentro de ColorValue) nfCol.Ink
+        ACCESOS_USUARIOS              INV_Acceso
+        catPermisos                   nfCatPermisos
+        colRoles                      nfRoles
+        gAccEdit                      varAccEdit
+
+CONTROL   : cntVAccesos
+PROPIEDAD Visible:
+=varPantalla = "ACC" && nfPuedeAcc
+PROPIEDAD FillPortions:
+=1
+
+15.2 LISTA DE USUARIOS (lado izquierdo)
+---------------------------------------
+CONTROL   : lblAccTitulo
+PROPIEDAD Text:
+="Usuarios (" & CountRows(colAccesos) & ")"
+
+CONTROL   : txtAccBuscar
+PROPIEDAD OnChange:
+=Set(varBuscarAcc; Self.Text)
+PROPIEDAD HintText (o Placeholder si es moderno):
+="Buscar por nombre, correo, rol o area"
+
+CONTROL   : galAccesos
+PROPIEDAD Items:
+=With(
+    {palabras: Filter(Split(Lower(Trim(varBuscarAcc)); " ") As w; !IsBlank(w.Value))};
+    Sort(
+        Filter(
+            colAccesos As a;
+            CountRows(
+                Filter(palabras As w; !(w.Value in Lower(a.Correo & " " & a.Nombre & " " & a.Rol & " " & a.Area)))
+            ) = 0
+        );
+        Nombre;
+        SortOrder.Ascending
+    )
+)
+
+CONTROL   : conFilaAcc  (dentro de galAccesos)
+PROPIEDAD Fill:
+=If(!IsBlank(varAccEdit) && varAccEdit.Id = ThisItem.Id; ColorValue(nfCol.AccentSoft); ColorValue(nfCol.Surface))
+
+CONTROL   : lblAccNombre     Text: =Coalesce(ThisItem.Nombre; "(sin nombre)")
+CONTROL   : lblAccCorreo     Text: =ThisItem.Correo
+CONTROL   : lblAccRol        Text: =ThisItem.Rol & If(IsBlank(ThisItem.Area); ""; "  ·  " & ThisItem.Area)
+CONTROL   : lblAccExtra      Text: =Trim(
+                                        If(IsBlank(ThisItem.Extra); ""; "+ " & ThisItem.Extra) & "  " &
+                                        If(IsBlank(ThisItem.Quitar); ""; "- " & ThisItem.Quitar)
+                                    )
+CONTROL   : lblAccEstado     Text:  =If(ThisItem.Activo; "ACTIVO"; "INACTIVO")
+                             Color: =If(ThisItem.Activo; ColorValue(nfCol.Accent); ColorValue(nfCol.Red))
+
+CONTROL   : btnSelAcc  (boton transparente encima de la fila)
+PROPIEDAD OnSelect:
+=Set(varAccEdit; ThisItem);;
+ClearCollect(
+    colAccExtra;
+    ForAll(
+        Filter(Split(ThisItem.Extra; ";") As x; !IsBlank(Trim(x.Value))) As y;
+        {Clave: Lower(Trim(y.Value))}
+    )
+);;
+ClearCollect(
+    colAccQuitar;
+    ForAll(
+        Filter(Split(ThisItem.Quitar; ";") As x; !IsBlank(Trim(x.Value))) As y;
+        {Clave: Lower(Trim(y.Value))}
+    )
+);;
+Reset(txtAccCorreo);; Reset(txtAccNombre);; Reset(cmbAccRol);; Reset(cmbAccArea);;
+Reset(tglAccActivo);; Reset(tglAccRutaBG)
+
+(varBuscarAcc ya esta en el OnStart de la Parte 4.)
+
+15.3 FORMULARIO (lado derecho)
+------------------------------
+CONTROL   : lblAccFormTit
+PROPIEDAD Text:
+=If(IsBlank(varAccEdit); "Nuevo usuario"; "Editar: " & Coalesce(varAccEdit.Nombre; varAccEdit.Correo))
+
+CONTROL   : txtAccCorreo
+PROPIEDAD Default:
+=Coalesce(varAccEdit.Correo; "")
+PROPIEDAD HintText (o Placeholder):
+="correo@empresa.com"
+
+CONTROL   : txtAccNombre
+PROPIEDAD Default:
+=Coalesce(varAccEdit.Nombre; "")
+
+CONTROL   : cmbAccRol
+PROPIEDAD Items:
+=nfRoles
+PROPIEDAD ItemDisplayText (moderno) / DisplayFields (clasico = ["Title"]):
+=ThisItem.Title
+PROPIEDAD DefaultSelectedItems:
+=Filter(nfRoles; Title = Coalesce(varAccEdit.Rol; "OPERATIVO"))
+PROPIEDAD SelectMultiple:
+=false
+
+CONTROL NUEVO : cmbAccArea   (en el lugar de txtAccSede)
+TIPO          : ModernCombobox
+   Items                : =Sort(Distinct(nfBodegasAll; AREA); Value; SortOrder.Ascending)
+   ItemDisplayText      : =ThisItem.Value
+   DefaultSelectedItems : =Filter(Sort(Distinct(nfBodegasAll; AREA); Value; SortOrder.Ascending); Value = Coalesce(varAccEdit.Area; ""))
+   SelectMultiple       : =false
+   InputTextPlaceholder : ="Area (la de su bodega)"
+   Width / Height       : las mismas que tenia txtAccSede
+
+CONTROL   : tglAccActivo
+PROPIEDAD Checked (moderno) / Default (clasico):
+=If(IsBlank(varAccEdit); true; varAccEdit.Activo)
+
+CONTROL NUEVO : tglAccRutaBG
+TIPO          : el mismo tipo que tglAccActivo (copialo y renombralo)
+UBICACION     : debajo de tglAccActivo
+   Label      : ="Sus salidas van a la app de Bodega General (RUTA_BG)"
+   Checked / Default : =If(IsBlank(varAccEdit); false; varAccEdit.RutaBG)
+
+CONTROL   : lblAccPermTit
+PROPIEDAD Text:
+="Permisos  (+ agregar al rol   ·   - quitar del rol)"
+
+CONTROL   : lblAccResumenRol
+PROPIEDAD Text:
+=With(
+    {rol: Coalesce(cmbAccRol.Selected.Title; "OPERATIVO")};
+    "Rol " & rol & ": " &
+    Concat(Filter(galAccPermisos.AllItems; DelRol); Clave; ", ") &
+    If(IsEmpty(colAccExtra); ""; "   ·   + " & Concat(colAccExtra; Clave; ", ")) &
+    If(IsEmpty(colAccQuitar); ""; "   ·   - " & Concat(colAccQuitar; Clave; ", "))
+)
+
+CONTROL   : galAccPermisos
+PROPIEDAD Items:
+=With(
+    {
+        rol:  Coalesce(cmbAccRol.Selected.Title; "OPERATIVO");
+        area: Coalesce(cmbAccArea.Selected.Value; "")
+    };
+    With(
+        {
+            p: Lower(Coalesce(LookUp(nfRoles; Title = rol).Permisos; "")) &
+               If(And(rol = "ENCARGADO BODEGA"; area = "BODEGA GENERAL"); ";ent;codall"; "")
+        };
+        ForAll(
+            nfCatPermisos As c;
+            {
+                Clave:       c.Clave;
+                Grupo:       c.Grupo;
+                Etiqueta:    c.Etiqueta;
+                Descripcion: c.Descripcion;
+                DelRol:      Or(p = "*"; (";" & c.Clave & ";") in (";" & p & ";"))
+            }
+        )
+    )
+)
+
+CONTROL   : lblPermEtq   (dentro de galAccPermisos > conFilaPerm)
+PROPIEDAD Text:
+=ThisItem.Grupo & "  ·  " & ThisItem.Etiqueta
+
+CONTROL   : lblPermRol
+PROPIEDAD Text:
+=If(ThisItem.DelRol; "Incluido en el rol"; "No incluido")
+PROPIEDAD Color:
+=If(ThisItem.DelRol; ColorValue(nfCol.Accent); ColorValue(nfCol.Faint))
+
+CONTROL   : chkPermExtra   (agregar)
+PROPIEDAD Text / Label:
+="+"
+PROPIEDAD Default (clasico) / Checked (moderno):
+=ThisItem.Clave in colAccExtra.Clave
+PROPIEDAD DisplayMode:
+=If(ThisItem.DelRol; DisplayMode.Disabled; DisplayMode.Edit)
+PROPIEDAD OnCheck:
+=If(!(ThisItem.Clave in colAccExtra.Clave); Collect(colAccExtra; {Clave: ThisItem.Clave}))
+PROPIEDAD OnUncheck:
+=RemoveIf(colAccExtra; Clave = ThisItem.Clave)
+
+CONTROL   : chkPermQuitar   (quitar)
+PROPIEDAD Text / Label:
+="-"
+PROPIEDAD Default (clasico) / Checked (moderno):
+=ThisItem.Clave in colAccQuitar.Clave
+PROPIEDAD DisplayMode:
+=If(ThisItem.DelRol; DisplayMode.Edit; DisplayMode.Disabled)
+PROPIEDAD OnCheck:
+=If(!(ThisItem.Clave in colAccQuitar.Clave); Collect(colAccQuitar; {Clave: ThisItem.Clave}))
+PROPIEDAD OnUncheck:
+=RemoveIf(colAccQuitar; Clave = ThisItem.Clave)
+
+CONTROL   : lblAccNota
+PROPIEDAD Text:
+="Un correo = una fila. Al guardar, si el correo tenia otras filas, esas quedan INACTIVAS. Los cambios aplican la proxima vez que la persona abra la app."
+
+CONTROL   : btnNuevoAcceso
+PROPIEDAD OnSelect:
+=Set(varAccEdit; Blank());;
+Clear(colAccExtra);;
+Clear(colAccQuitar);;
+Reset(txtAccCorreo);; Reset(txtAccNombre);; Reset(cmbAccRol);; Reset(cmbAccArea);;
+Reset(tglAccActivo);; Reset(tglAccRutaBG)
+
+CONTROL   : btnGuardarAcceso
+PROPIEDAD OnSelect:
+--------------------------------------------------------------------------------
+=With(
+    {
+        correo: Lower(Trim(txtAccCorreo.Text));
+        rol:    Coalesce(cmbAccRol.Selected.Title; "OPERATIVO");
+        area:   Coalesce(cmbAccArea.Selected.Value; "")
+    };
+    If(
+        !IsMatch(correo; Match.Email);
+        Notify("Escriba un correo valido."; NotificationType.Error);
+
+        rol <> "ADMIN" && IsBlank(area);
+        Notify("Seleccione el area de la persona."; NotificationType.Error);
+
+        correo = nfUser.Correo && rol <> "ADMIN";
+        Notify("No puede quitarse a usted mismo el rol ADMIN."; NotificationType.Error);
+
+        With(
+            {
+                r: If(
+                       IsBlank(varAccEdit);
+                       LookUp(INV_Acceso; Title = correo);
+                       LookUp(INV_Acceso; ID = varAccEdit.Id)
+                   )
+            };
+            With(
+                {
+                    guardado: Patch(
+                        INV_Acceso;
+                        If(IsBlank(r); Defaults(INV_Acceso); r);
+                        {
+                            Title:           correo;
+                            NOMBRE:          Trim(txtAccNombre.Text);
+                            AREA:            area;
+                            ROL:             {Value: rol};
+                            RUTA_BG:         tglAccRutaBG.Checked;
+                            ACTIVO:          tglAccActivo.Checked;
+                            PERMISOS_EXTRA:  Concat(colAccExtra; Clave; ";");
+                            PERMISOS_QUITAR: Concat(colAccQuitar; Clave; ";")
+                        }
+                    )
+                };
+                If(
+                    tglAccActivo.Checked;
+                    UpdateIf(INV_Acceso; Title = correo && ID <> guardado.ID; {ACTIVO: false})
+                );;
+                Notify("Acceso de " & correo & " guardado."; NotificationType.Success)
+            )
+        );;
+        Refresh(INV_Acceso);;
+        Select(btnRouter)
+    )
+)
+--------------------------------------------------------------------------------
+NOTA: si tglAccActivo / tglAccRutaBG son toggles CLASICOS, cambia .Checked por
+.Value en las dos lineas RUTA_BG, ACTIVO y en el If(tglAccActivo...).
+
+
+################################################################################
+PARTE 16 - PROYECTOS: COMO SE USAN (guia para el encargado)
+################################################################################
+
+QUE ES UN PROYECTO
+  Una obra o trabajo (ej. "Remodelacion de cuarto frio") al que se le compra
+  material que NO debe usar nadie mas. Ese material queda apartado.
+
+CREAR / ACTIVAR UN PROYECTO
+  1. Ingresos > enciende "Es para un proyecto".
+  2. Escribe el nombre en "O escriba el nombre de un proyecto nuevo" >
+     "Crear proyecto". Se crea PROYMT-01 (o el que siga) y queda ABIERTO.
+  3. La proxima vez ya no lo creas: "Elegir proyecto existente".
+  El boton "Por proyecto" en Salidas aparece solo cuando existe al menos un
+  proyecto ABIERTO del area de la persona.
+
+COMPRAR PARA UN PROYECTO
+  - Con el proyecto elegido, agregas los productos, cantidades, costo y
+    guardas. Ese material entra a la bodega PERO en su fila del proyecto:
+       CODO03|MT-FON|PROYMT-01   (apartado)
+       CODO03|MT-FON             (general, no se toca)
+  - Si en una misma factura viene una parte general y otra para el proyecto:
+    haz DOS ingresos con la misma factura (uno sin proyecto y otro con
+    proyecto).
+
+SACAR MATERIAL DEL PROYECTO
+  Salidas > "Por proyecto" > eliges el proyecto > aparece solo lo apartado.
+  En "Por unidad" ese material NO aparece, asi nadie lo saca por error.
+
+CUANDO TERMINA EL PROYECTO
+  1. Catalogo: veras las filas con "PROYECTO PROYMT-01". Si sobro material,
+     "Pasar a general" lo pasa al material general de la misma bodega.
+  2. En la lista INV_Proyectos cambia ESTADO a CERRADO. Deja de aparecer en
+     los selectores. (Si quieres, te hago el boton "Cerrar proyecto" en la
+     app.)
+
+
+################################################################################
+PARTE 17 - ORDEN PARA IMPLEMENTAR Y PROBAR
+################################################################################
+
+ORDEN (para no ver errores en cascada)
+   1. SharePoint: columnas nuevas (Parte 1.1), indice en INV_Existencias.PROYECTO,
+      opcion "TRASLADO" en INGRESOS.TIPO_INGRESO, datos de la Parte 0.3.
+   2. Power Apps: Configuracion > Limite de filas = 2000.
+   3. Datos > actualizar INV_Existencias, INGRESOS, PRODUCTOS, INV_Conteos,
+      INV_Acceso (para que vea las columnas nuevas).
+   4. App.Formulas (Parte 3).
+   5. App.OnStart (Parte 4) -> clic derecho en App > Ejecutar OnStart.
+   6. Crear btnCargarStock y btnCargarConteo (Parte 5) y luego btnRouter.
+   7. Salidas (6), Popup (7), Entrega (8), Ingresos (9), Conteo (10),
+      Codigos (11), Catalogo (12), Reportes (13).
+   8. Flujo y script de Excel (14), luego los dos botones de Excel.
+   9. Accesos (15).
+  10. btnCorregirEPP una vez, y borrarlo junto con Button2 y btnRepararBodegas.
+
+PRUEBAS (en este orden, con una persona por rol)
+   [ ] Salidas abre en Bodega General y se ven productos sin escribir nada.
+   [ ] Chips: "Todas las bodegas" aparece UNA sola vez.
+   [ ] Buscar "codo 3" encuentra "CODO PVC 3 PULG".
+   [ ] Salida de BG queda PENDIENTE; salida de MT-FON queda ENTREGADO.
+   [ ] Confirmar entrega: Hoy (n), Anteriores (n), flechas, busqueda.
+   [ ] Devolucion parcial: suma a la bodega y aparece en INGRESOS (DEVOLUCION).
+   [ ] Ingreso con lote y vencimiento: se ve en Catalogo y en el Excel.
+   [ ] Ingreso de proyecto: aparece en "Por proyecto" y NO en "Por unidad".
+   [ ] Conteo: guardar borrador, salir, volver -> sigue lo contado.
+   [ ] Enviar conteo -> correo al gerente -> CONFIRMAR -> existencia = fisico.
+   [ ] Crear 3 codigos: elegir categoria y escribir en todas las cajas sin
+       que se borre nada.
+   [ ] Catalogo: deshabilitar un articulo -> no aparece en Salidas.
+   [ ] Un OPERATIVO no ve botones de editar ni el filtro de deshabilitados.
+   [ ] Editar nombre -> cambia en todas las bodegas y en PRODUCTOS.
+   [ ] Excel de Catalogo y de Reportes se descargan solos.
+   [ ] Accesos: agregar "+ing" a un OPERATIVO -> al reabrir ve Ingresos.
+   [ ] PRODUCTOS.EXISTENCIA = suma de INV_Existencias del mismo codigo
+       (revisa 3 codigos al azar despues de todas las pruebas).
+
+================================================================================
+FIN
+================================================================================
